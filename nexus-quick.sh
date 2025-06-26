@@ -8,6 +8,7 @@ LOG_DIR="/workspace/nexus_logs"
 WORKSPACE_DIR="/workspace"
 CPU_ASSIGNMENT_FILE="/workspace/nexus_cpu_assignments.txt"
 CORES_PER_NODE=3
+MEMORY_PER_NODE="9G"
 
 # === Warna terminal ===
 GREEN='\033[0;32m'
@@ -22,7 +23,7 @@ RESET='\033[0m'
 function show_header() {
     clear
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo -e "                           NEXUS - (Quickpod Edition)"
+    echo -e "                           NEXUS - Node (Quickpod Previlege Edition)"
     echo -e "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
 }
 
@@ -470,10 +471,11 @@ function run_container() {
     
     local node_cores=$(get_node_cores "$node_id")
     
-    # Jalankan container dengan alokasi CPU cores spesifik
-    echo -e "${CYAN}[*] Menjalankan container dengan CPU cores: $node_cores${RESET}"
+    # Jalankan container dengan alokasi CPU cores dan memory spesifik
+    echo -e "${CYAN}[*] Menjalankan container dengan CPU cores: $node_cores dan memory: $MEMORY_PER_NODE${RESET}"
     docker run -d --name "$container_name" \
         --cpuset-cpus="$node_cores" \
+        --memory="$MEMORY_PER_NODE" \
         -v "$log_file":/root/nexus.log \
         -e NODE_ID="$node_id" \
         "$IMAGE_NAME"
@@ -593,8 +595,8 @@ function list_nodes() {
     echo "--------------------------------------------------------------"
     
     if [ "$SOLUTION_TYPE" == "nested" ]; then
-        printf "%-5s %-20s %-12s %-15s %-15s %-15s\n" "No" "Node ID" "Status" "CPU" "Memori" "CPU Cores"
-        echo "--------------------------------------------------------------"
+        printf "%-5s %-20s %-12s %-15s %-15s %-15s %-15s\n" "No" "Node ID" "Status" "CPU" "Memori" "Batas Memori" "CPU Cores"
+        echo "-----------------------------------------------------------------------------------------"
         
         local all_nodes=($(get_all_nodes))
         local failed_nodes=()
@@ -622,10 +624,10 @@ function list_nodes() {
                 fi
             fi
             
-            printf "%-5s %-20s %-12s %-15s %-15s %-15s\n" "$((i+1))" "$node_id" "$status" "$cpu" "$mem" "$cpu_cores"
+            printf "%-5s %-20s %-12s %-15s %-15s %-15s %-15s\n" "$((i+1))" "$node_id" "$status" "$cpu" "$mem" "$MEMORY_PER_NODE" "$cpu_cores"
         done
         
-        echo "--------------------------------------------------------------"
+        echo "-----------------------------------------------------------------------------------------"
         
         if [ ${#failed_nodes[@]} -gt 0 ]; then
             echo -e "${RED}⚠ Node gagal dijalankan (exited):${RESET}"
