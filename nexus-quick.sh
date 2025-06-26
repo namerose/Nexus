@@ -7,7 +7,7 @@ IMAGE_NAME="nexus-node:latest"
 LOG_DIR="/workspace/nexus_logs"
 WORKSPACE_DIR="/workspace"
 CPU_ASSIGNMENT_FILE="/workspace/nexus_cpu_assignments.txt"
-CORES_PER_NODE=3
+CORES_PER_NODE=2
 MEMORY_PER_NODE="6G"
 
 # === Warna terminal ===
