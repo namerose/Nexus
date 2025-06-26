@@ -8,7 +8,7 @@ LOG_DIR="/workspace/nexus_logs"
 WORKSPACE_DIR="/workspace"
 CPU_ASSIGNMENT_FILE="/workspace/nexus_cpu_assignments.txt"
 CORES_PER_NODE=3
-MEMORY_PER_NODE="9G"
+MEMORY_PER_NODE="6G"
 
 # === Warna terminal ===
 GREEN='\033[0;32m'
