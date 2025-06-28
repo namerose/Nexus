@@ -6,9 +6,6 @@ BASE_CONTAINER_NAME="nexus-node"
 IMAGE_NAME="nexus-node:latest"
 LOG_DIR="/workspace/nexus_logs"
 WORKSPACE_DIR="/workspace"
-CPU_ASSIGNMENT_FILE="/workspace/nexus_cpu_assignments.txt"
-CORES_PER_NODE=2
-MEMORY_PER_NODE="7G"
 
 # === Warna terminal ===
 GREEN='\033[0;32m'
@@ -317,134 +314,6 @@ EOF
     echo ""
 }
 
-# === Manajemen CPU Cores ===
-function get_total_cpu_cores() {
-    nproc
-}
-
-function get_assigned_cores() {
-    if [ ! -f "$CPU_ASSIGNMENT_FILE" ]; then
-        touch "$CPU_ASSIGNMENT_FILE"
-    fi
-    cat "$CPU_ASSIGNMENT_FILE"
-}
-
-function is_core_assigned() {
-    local core=$1
-    grep -q "^.*:.*,${core},.*$\|^.*:.*,${core}$\|^.*:${core},.*$\|^.*:${core}$" "$CPU_ASSIGNMENT_FILE"
-}
-
-function get_available_cores() {
-    local total_cores=$(get_total_cpu_cores)
-    local available_cores=""
-    
-    for ((i=0; i<total_cores; i++)); do
-        if ! is_core_assigned $i; then
-            available_cores="${available_cores}${i},"
-        fi
-    done
-    
-    # Hapus koma terakhir
-    available_cores=${available_cores%,}
-    echo "$available_cores"
-}
-
-function assign_cores_to_node() {
-    local node_id=$1
-    local cores=$2
-    
-    # Hapus assignment lama jika ada
-    sed -i "/^${node_id}:/d" "$CPU_ASSIGNMENT_FILE"
-    
-    # Tambahkan assignment baru
-    echo "${node_id}:${cores}" >> "$CPU_ASSIGNMENT_FILE"
-}
-
-function get_node_cores() {
-    local node_id=$1
-    grep "^${node_id}:" "$CPU_ASSIGNMENT_FILE" | cut -d':' -f2
-}
-
-function release_node_cores() {
-    local node_id=$1
-    sed -i "/^${node_id}:/d" "$CPU_ASSIGNMENT_FILE"
-}
-
-function select_cores_for_node() {
-    local node_id=$1
-    local total_cores=$(get_total_cpu_cores)
-    local available_cores=$(get_available_cores)
-    
-    echo -e "${CYAN}=== Pilihan CPU Cores ===${RESET}"
-    echo "Total CPU cores tersedia: $total_cores"
-    echo "Cores yang belum digunakan: $available_cores"
-    echo ""
-    echo "1. Pilih cores secara manual"
-    echo "2. Gunakan cores yang tersedia secara otomatis"
-    read -rp "Pilihan (1/2): " core_choice
-    
-    if [[ "$core_choice" == "1" ]]; then
-        echo "Masukkan nomor cores yang ingin digunakan (contoh: 0,1,2 atau 3-5)"
-        read -rp "Cores: " manual_cores
-        
-        # Konversi range (e.g., 3-5) menjadi daftar (e.g., 3,4,5)
-        if [[ "$manual_cores" =~ ^[0-9]+-[0-9]+$ ]]; then
-            local start_core=$(echo "$manual_cores" | cut -d'-' -f1)
-            local end_core=$(echo "$manual_cores" | cut -d'-' -f2)
-            manual_cores=""
-            for ((i=start_core; i<=end_core; i++)); do
-                manual_cores="${manual_cores}${i},"
-            done
-            manual_cores=${manual_cores%,}
-        fi
-        
-        # Validasi cores
-        local cores_array=(${manual_cores//,/ })
-        if [ ${#cores_array[@]} -ne $CORES_PER_NODE ]; then
-            echo -e "${RED}Error: Harus memilih tepat $CORES_PER_NODE cores.${RESET}"
-            return 1
-        fi
-        
-        # Periksa apakah cores sudah digunakan
-        local invalid_cores=0
-        for core in ${cores_array[@]}; do
-            if is_core_assigned $core; then
-                echo -e "${RED}Error: Core $core sudah digunakan oleh node lain.${RESET}"
-                invalid_cores=1
-            fi
-            
-            if [ "$core" -ge "$total_cores" ]; then
-                echo -e "${RED}Error: Core $core tidak valid. Total cores: $total_cores.${RESET}"
-                invalid_cores=1
-            fi
-        done
-        
-        if [ $invalid_cores -eq 1 ]; then
-            return 1
-        fi
-        
-        assign_cores_to_node "$node_id" "$manual_cores"
-        echo -e "${GREEN}[✓] Berhasil menetapkan cores $manual_cores ke node $node_id.${RESET}"
-        return 0
-    else
-        # Pilih cores otomatis
-        local cores_array=(${available_cores//,/ })
-        if [ ${#cores_array[@]} -lt $CORES_PER_NODE ]; then
-            echo -e "${RED}Error: Tidak cukup cores tersedia. Dibutuhkan $CORES_PER_NODE cores.${RESET}"
-            return 1
-        fi
-        
-        local auto_cores=""
-        for ((i=0; i<CORES_PER_NODE; i++)); do
-            auto_cores="${auto_cores}${cores_array[$i]},"
-        done
-        auto_cores=${auto_cores%,}
-        
-        assign_cores_to_node "$node_id" "$auto_cores"
-        echo -e "${GREEN}[✓] Berhasil menetapkan cores $auto_cores ke node $node_id secara otomatis.${RESET}"
-        return 0
-    fi
-}
 
 # === Jalankan Container ===
 function run_container() {
@@ -462,33 +331,19 @@ function run_container() {
     touch "$log_file"
     chmod 644 "$log_file"
     
-    # Pilih CPU cores untuk node
-    echo -e "${CYAN}[*] Menetapkan CPU cores untuk node...${RESET}"
-    if ! select_cores_for_node "$node_id"; then
-        echo -e "${RED}[!] Gagal menetapkan CPU cores. Node tidak dijalankan.${RESET}"
-        return 1
-    fi
-    
-    local node_cores=$(get_node_cores "$node_id")
-    
-    # Jalankan container dengan alokasi CPU cores dan memory spesifik
-    echo -e "${CYAN}[*] Menjalankan container dengan CPU cores: $node_cores dan memory: $MEMORY_PER_NODE${RESET}"
+    # Jalankan container
     docker run -d --name "$container_name" \
-        --cpuset-cpus="$node_cores" \
-        --memory="$MEMORY_PER_NODE" \
         -v "$log_file":/root/nexus.log \
         -e NODE_ID="$node_id" \
         "$IMAGE_NAME"
     
     if [ $? -ne 0 ]; then
-        echo -e "${RED}[!] Gagal menjalankan container. Melepaskan CPU cores.${RESET}"
-        release_node_cores "$node_id"
+        echo -e "${RED}[!] Gagal menjalankan container.${RESET}"
         return 1
     fi
     
     echo -e "${GREEN}[✓] Container berhasil dijalankan${RESET}"
     echo -e "${GREEN}[✓] Log tersedia di: ${log_file}${RESET}"
-    echo -e "${GREEN}[✓] CPU cores yang digunakan: $node_cores${RESET}"
     echo ""
 }
 
@@ -540,9 +395,6 @@ function uninstall_node() {
         # Hapus file log
         rm -f "${LOG_DIR}/nexus-${node_id}.log"
         
-        # Lepaskan CPU cores
-        echo -e "${CYAN}[*] Melepaskan CPU cores untuk node: $node_id${RESET}"
-        release_node_cores "$node_id"
     else
         # Matikan screen yang mungkin masih berjalan
         screen -S nexus -X quit >/dev/null 2>&1 || true
@@ -595,8 +447,8 @@ function list_nodes() {
     echo "--------------------------------------------------------------"
     
     if [ "$SOLUTION_TYPE" == "nested" ]; then
-        printf "%-5s %-20s %-12s %-15s %-15s %-15s %-15s\n" "No" "Node ID" "Status" "CPU" "Memori" "Batas Memori" "CPU Cores"
-        echo "-----------------------------------------------------------------------------------------"
+        printf "%-5s %-20s %-12s %-15s %-15s\n" "No" "Node ID" "Status" "CPU" "Memori"
+        echo "--------------------------------------------------------------"
         
         local all_nodes=($(get_all_nodes))
         local failed_nodes=()
@@ -607,10 +459,6 @@ function list_nodes() {
             local cpu="N/A"
             local mem="N/A"
             local status="Tidak Aktif"
-            local cpu_cores=$(get_node_cores "$node_id")
-            if [ -z "$cpu_cores" ]; then
-                cpu_cores="N/A"
-            fi
             
             if docker inspect "$container" &>/dev/null; then
                 status=$(docker inspect -f '{{.State.Status}}' "$container" 2>/dev/null)
@@ -624,10 +472,10 @@ function list_nodes() {
                 fi
             fi
             
-            printf "%-5s %-20s %-12s %-15s %-15s %-15s %-15s\n" "$((i+1))" "$node_id" "$status" "$cpu" "$mem" "$MEMORY_PER_NODE" "$cpu_cores"
+            printf "%-5s %-20s %-12s %-15s %-15s\n" "$((i+1))" "$node_id" "$status" "$cpu" "$mem"
         done
         
-        echo "-----------------------------------------------------------------------------------------"
+        echo "--------------------------------------------------------------"
         
         if [ ${#failed_nodes[@]} -gt 0 ]; then
             echo -e "${RED}⚠ Node gagal dijalankan (exited):${RESET}"
