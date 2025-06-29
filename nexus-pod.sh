@@ -87,24 +87,60 @@ function install_podman() {
     # Install dependencies
     apt install -y curl wget gnupg2 software-properties-common apt-transport-https ca-certificates
     
-    # Add Podman repository
-    . /etc/os-release
-    echo "deb https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/stable/xUbuntu_${VERSION_ID}/ /" | tee /etc/apt/sources.list.d/devel:kubic:libcontainers:stable.list
-    curl -L "https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/stable/xUbuntu_${VERSION_ID}/Release.key" | apt-key add -
+    # Coba install Podman dari repository Ubuntu default terlebih dahulu
+    echo -e "${CYAN}[*] Mencoba install Podman dari repository Ubuntu...${RESET}"
+    apt install -y podman 2>/dev/null
     
-    # Update and install Podman
-    apt update
-    apt install -y podman
-    
-    # Verify installation
+    # Cek apakah berhasil
     if command -v podman &> /dev/null; then
-        PODMAN_VERSION=$(podman --version | grep -o '[0-9]\+\.[0-9]\+\.[0-9]\+')
-        echo -e "${GREEN}[✓] Podman berhasil diinstall versi: $PODMAN_VERSION${RESET}"
+        PODMAN_VERSION=$(podman --version | grep -o '[0-9]\+\.[0-9]\+\.[0-9]\+' || echo "unknown")
+        echo -e "${GREEN}[✓] Podman berhasil diinstall dari repository Ubuntu versi: $PODMAN_VERSION${RESET}"
         PODMAN_INSTALLED=true
     else
-        echo -e "${RED}[!] Gagal menginstall Podman${RESET}"
-        PODMAN_INSTALLED=false
-        return 1
+        echo -e "${YELLOW}[!] Podman tidak tersedia di repository Ubuntu, mencoba repository alternatif...${RESET}"
+        
+        # Hapus repository lama jika ada
+        rm -f /etc/apt/sources.list.d/devel:kubic:libcontainers:stable.list
+        
+        # Coba metode alternatif dengan GPG key yang lebih aman
+        . /etc/os-release
+        
+        # Download dan install GPG key dengan cara yang lebih aman
+        curl -fsSL "https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/stable/xUbuntu_${VERSION_ID}/Release.key" | gpg --dearmor -o /usr/share/keyrings/libcontainers-archive-keyring.gpg
+        
+        # Add repository dengan signed-by
+        echo "deb [signed-by=/usr/share/keyrings/libcontainers-archive-keyring.gpg] https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/stable/xUbuntu_${VERSION_ID}/ /" | tee /etc/apt/sources.list.d/devel:kubic:libcontainers:stable.list
+        
+        # Update dan install
+        apt update
+        apt install -y podman
+        
+        # Verify installation
+        if command -v podman &> /dev/null; then
+            PODMAN_VERSION=$(podman --version | grep -o '[0-9]\+\.[0-9]\+\.[0-9]\+' || echo "unknown")
+            echo -e "${GREEN}[✓] Podman berhasil diinstall dari repository alternatif versi: $PODMAN_VERSION${RESET}"
+            PODMAN_INSTALLED=true
+        else
+            echo -e "${RED}[!] Gagal menginstall Podman dari semua repository${RESET}"
+            echo -e "${YELLOW}[!] Mencoba install dengan snap sebagai alternatif terakhir...${RESET}"
+            
+            # Install snap jika belum ada
+            apt install -y snapd
+            
+            # Install Podman via snap
+            snap install podman
+            
+            # Cek lagi
+            if command -v podman &> /dev/null; then
+                PODMAN_VERSION=$(podman --version | grep -o '[0-9]\+\.[0-9]\+\.[0-9]\+' || echo "snap")
+                echo -e "${GREEN}[✓] Podman berhasil diinstall via snap versi: $PODMAN_VERSION${RESET}"
+                PODMAN_INSTALLED=true
+            else
+                echo -e "${RED}[!] Gagal menginstall Podman dengan semua metode${RESET}"
+                PODMAN_INSTALLED=false
+                return 1
+            fi
+        fi
     fi
     
     echo ""
