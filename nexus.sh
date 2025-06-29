@@ -7,7 +7,7 @@ IMAGE_NAME="nexus-node:latest"
 LOG_DIR="/root/nexus_logs"
 CPU_ASSIGNMENT_FILE="/root/nexus_cpu_assignments.txt"
 CORES_PER_NODE=2
-MEMORY_PER_NODE="9G"
+MEMORY_PER_NODE="11G"
 
 # === Warna terminal ===
 GREEN='\033[0;32m'
