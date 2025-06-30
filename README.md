@@ -4,7 +4,7 @@ apt install wget htop
 ```
 or
 ```bash
-sudo apt install wget htop
+sudo apt update && apt upgrade -y
 sudo apt install wget htop
 ```
 
