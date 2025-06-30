@@ -30,3 +30,8 @@ chmod +x nexus-pod.sh
 ```
 
 For IDK what to call but im using it using screen or tmux
+```bash
+wget https://raw.githubusercontent.com/namerose/Nexus/refs/heads/main/nexus-ts.sh
+chmod +x nexus-ts.sh
+./nexus-ts.sh
+```
