@@ -8,21 +8,21 @@ sudo apt install wget htop
 sudo apt install wget htop
 ```
 
-For Normal VPS using Docker ( your VPS server is not in docker container )
+For Normal VPS using Docker ( your VPS server is not in docker container ) *required Ubuntu 24.04
 ```bash
 wget https://raw.githubusercontent.com/namerose/Nexus/refs/heads/main/nexus.sh
 chmod +x nexus.sh
 ./nexus.sh
 ```
 
-For Not Normal VPS ( DNID ) like Quickpod Previlege using Image Ubuntu 24.04
+For Not Normal VPS like Quickpod Previlege *required Ubuntu 24.04
 ```bash
 wget https://raw.githubusercontent.com/namerose/Nexus/refs/heads/main/nexus-quick.sh
 chmod +x nexus-quick.sh
 ./nexus-quick.sh
 ```
 
-For Podman
+For Podman *required Ubuntu 24.04
 ```bash
 wget https://raw.githubusercontent.com/namerose/Nexus/refs/heads/main/nexus-pod.sh
 chmod +x nexus-pod.sh
