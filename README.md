@@ -29,7 +29,7 @@ chmod +x nexus-pod.sh
 ./nexus-pod.sh
 ```
 
-Retarted that using screen or tmux, im also using this *required Ubuntu 24.04
+Retarted that using screen or tmux, im also using this *required Ubuntu 24.04 ( Not Containerized like using podman,docker ) 
 ```bash
 wget https://raw.githubusercontent.com/namerose/Nexus/refs/heads/main/nexus-ts.sh
 chmod +x nexus-ts.sh
