@@ -6,6 +6,8 @@ BASE_CONTAINER_NAME="nexus-node"
 IMAGE_NAME="nexus-node:latest"
 LOG_DIR="/workspace/nexus_logs"
 WORKSPACE_DIR="/workspace"
+REFRESH_INTERVAL_MINUTES=10  # Interval restart otomatis
+AUTO_REFRESH_ENABLED=false   # Status auto-refresh
 
 # === Warna terminal ===
 GREEN='\033[0;32m'
@@ -16,11 +18,33 @@ BLUE='\033[0;34m'
 MAGENTA='\033[0;35m'
 RESET='\033[0m'
 
+# === Ambil Versi CLI ===
+function get_cli_version() {
+    local version="Unknown"
+    if command -v curl >/dev/null 2>&1; then
+        version=$(curl -s "https://api.github.com/repos/nexus-xyz/nexus-cli/releases/latest" 2>/dev/null | grep '"tag_name"' | cut -d'"' -f4)
+        if [ -z "$version" ]; then
+            version="Unknown"
+        fi
+    fi
+    echo "$version"
+}
+
 # === Header Tampilan ===
 function show_header() {
     clear
+    local cli_version=$(get_cli_version)
+    local auto_refresh_status="${RED}OFF${RESET}"
+    
+    # Cek apakah auto-refresh aktif berdasarkan variabel status
+    if [ "$AUTO_REFRESH_ENABLED" = true ]; then
+        auto_refresh_status="${GREEN}ON${RESET} (Setiap ${REFRESH_INTERVAL_MINUTES} menit)"
+    fi
+    
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo -e "                           NEXUS - Node (Quickpod Previlege Edition)"
+    echo -e "                           Latest CLI Version: ${cli_version}"
+    echo -e "                           Auto-refresh: ${auto_refresh_status}"
     echo -e "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
 }
 
@@ -234,86 +258,17 @@ EOF
 
 # === Solusi 2: Instalasi Langsung di Ubuntu 24.04 ===
 function setup_direct_installation() {
-    echo -e "${CYAN}[*] Menyiapkan instalasi langsung di Ubuntu 24.04...${RESET}"
-    
-    # Update package index
-    apt update
-    
-    # Install dependencies
-    apt install -y curl screen build-essential pkg-config libssl-dev git-all
-    
-    # Install Nexus CLI
-    curl -sSL https://cli.nexus.xyz/ | sh
-    
-    # Buat direktori untuk script dan log
-    mkdir -p /root/nexus-scripts
-    mkdir -p /root/nexus-logs
-    
-    # Buat script untuk menjalankan Nexus
-    cat > /root/nexus-scripts/run-nexus.sh <<EOF
-#!/bin/bash
-NODE_ID=\$(cat /root/.nexus/node-id)
-if [ -z "\$NODE_ID" ]; then
-    echo "NODE_ID tidak ditemukan di /root/.nexus/node-id"
-    exit 1
-fi
-
-# Matikan screen yang mungkin masih berjalan
-screen -S nexus -X quit >/dev/null 2>&1 || true
-
-# Jalankan nexus-network di dalam screen
-screen -dmS nexus bash -c "/root/.nexus/bin/nexus-network start --node-id \$NODE_ID &>> /root/nexus-logs/nexus.log"
-
-# Cek apakah screen berhasil dijalankan
-if screen -list | grep -q "nexus"; then
-    echo "Node berjalan di latar belakang"
-else
-    echo "Gagal menjalankan node"
-    cat /root/nexus-logs/nexus.log
-    exit 1
-fi
-
-echo "Nexus node berjalan dengan NODE_ID: \$NODE_ID"
-echo "Log tersedia di: /root/nexus-logs/nexus.log"
-EOF
-    
-    chmod +x /root/nexus-scripts/run-nexus.sh
-    
-    # Jika systemd tersedia, buat service
-    if [ "$SYSTEMD_AVAILABLE" = true ]; then
-        # Create systemd service for Nexus
-        cat > /etc/systemd/system/nexus.service <<EOF
-[Unit]
-Description=Nexus Network Node
-After=network.target
-
-[Service]
-Type=simple
-User=root
-WorkingDirectory=/root
-ExecStart=/root/nexus-scripts/run-nexus.sh
-Restart=on-failure
-RestartSec=10
-StandardOutput=journal
-StandardError=journal
-
-[Install]
-WantedBy=multi-user.target
-EOF
-        echo -e "${GREEN}[✓] Service systemd dibuat${RESET}"
-    else
-        echo -e "${YELLOW}[!] Systemd tidak tersedia, akan menggunakan script langsung${RESET}"
-        # Buat crontab entry untuk menjalankan pada boot (jika cron tersedia)
-        if command -v crontab >/dev/null 2>&1; then
-            (crontab -l 2>/dev/null || echo "") | grep -v "run-nexus.sh" | { cat; echo "@reboot /root/nexus-scripts/run-nexus.sh"; } | crontab -
-            echo -e "${GREEN}[✓] Crontab entry dibuat untuk menjalankan pada boot${RESET}"
-        fi
-    fi
-    
-    echo -e "${GREEN}[✓] Instalasi langsung selesai${RESET}"
+    echo -e "${RED}[!] Solusi instalasi langsung telah dihapus.${RESET}"
+    echo -e "${YELLOW}[!] Silakan gunakan solusi Nested Container (opsi 1).${RESET}"
     echo ""
+    
+    # Set solution type back to nested
+    SOLUTION_TYPE="nested"
+    echo "$SOLUTION_TYPE" > "${WORKSPACE_DIR}/.nexus_solution_type"
+    
+    read -p "Tekan enter untuk kembali ke menu utama..."
+    return
 }
-
 
 # === Jalankan Container ===
 function run_container() {
@@ -351,34 +306,16 @@ function run_container() {
 function run_direct() {
     local node_id=$1
     
-    echo -e "${CYAN}[*] Menjalankan Nexus langsung untuk node ID: ${node_id}...${RESET}"
-    
-    # Set node ID
-    echo "$node_id" > /root/.nexus/node-id
-    
-    if [ "$SYSTEMD_AVAILABLE" = true ]; then
-        # Set environment variable for systemd service
-        echo "NODE_ID=$node_id" > /etc/default/nexus
-        
-        # Reload systemd
-        systemctl daemon-reload
-        
-        # Enable and start service
-        systemctl enable nexus
-        systemctl restart nexus
-        
-        echo -e "${GREEN}[✓] Nexus berhasil dijalankan sebagai service systemd${RESET}"
-        echo -e "${GREEN}[✓] Log tersedia melalui: journalctl -u nexus -f${RESET}"
-    else
-        # Jalankan script langsung
-        /root/nexus-scripts/run-nexus.sh
-        
-        echo -e "${GREEN}[✓] Nexus berhasil dijalankan menggunakan screen${RESET}"
-        echo -e "${GREEN}[✓] Log tersedia di: /root/nexus-logs/nexus.log${RESET}"
-        echo -e "${GREEN}[✓] Untuk melihat screen: screen -r nexus${RESET}"
-    fi
-    
+    echo -e "${RED}[!] Solusi instalasi langsung telah dihapus.${RESET}"
+    echo -e "${YELLOW}[!] Silakan gunakan solusi Nested Container (opsi 1).${RESET}"
     echo ""
+    
+    # Set solution type back to nested
+    SOLUTION_TYPE="nested"
+    echo "$SOLUTION_TYPE" > "${WORKSPACE_DIR}/.nexus_solution_type"
+    
+    read -p "Tekan enter untuk kembali ke menu utama..."
+    return
 }
 
 # === Hapus Node ===
@@ -388,42 +325,11 @@ function uninstall_node() {
     
     echo -e "${CYAN}[*] Menghapus node ID: ${node_id}...${RESET}"
     
-    if [ "$SOLUTION_TYPE" == "nested" ]; then
-        # Hapus container
-        docker rm -f "$container_name" 2>/dev/null || true
-        
-        # Hapus file log
-        rm -f "${LOG_DIR}/nexus-${node_id}.log"
-        
-    else
-        # Matikan screen yang mungkin masih berjalan
-        screen -S nexus -X quit >/dev/null 2>&1 || true
-        
-        if [ "$SYSTEMD_AVAILABLE" = true ]; then
-            # Stop and disable service
-            systemctl stop nexus 2>/dev/null || true
-            systemctl disable nexus 2>/dev/null || true
-            
-            # Remove service file
-            rm -f /etc/systemd/system/nexus.service
-            rm -f /etc/default/nexus
-            
-            # Reload systemd
-            systemctl daemon-reload 2>/dev/null || true
-        else
-            # Hapus crontab entry jika ada
-            if command -v crontab >/dev/null 2>&1; then
-                (crontab -l 2>/dev/null || echo "") | grep -v "run-nexus.sh" | crontab -
-            fi
-            
-            # Matikan proses nexus-network jika masih berjalan
-            pkill -f "nexus-network" 2>/dev/null || true
-        fi
-        
-        # Hapus script dan log
-        rm -f /root/nexus-scripts/run-nexus.sh
-        rm -f /root/nexus-logs/nexus.log
-    fi
+    # Hapus container
+    docker rm -f "$container_name" 2>/dev/null || true
+    
+    # Hapus file log
+    rm -f "${LOG_DIR}/nexus-${node_id}.log"
     
     echo -e "${GREEN}[✓] Node berhasil dihapus${RESET}"
     echo ""
@@ -431,13 +337,7 @@ function uninstall_node() {
 
 # === Ambil Semua Node ===
 function get_all_nodes() {
-    if [ "$SOLUTION_TYPE" == "nested" ]; then
-        docker ps -a --format "{{.Names}}" | grep "^${BASE_CONTAINER_NAME}-" | sed "s/${BASE_CONTAINER_NAME}-//"
-    else
-        if [ -f /root/.nexus/node-id ]; then
-            cat /root/.nexus/node-id
-        fi
-    fi
+    docker ps -a --format "{{.Names}}" | grep "^${BASE_CONTAINER_NAME}-" | sed "s/${BASE_CONTAINER_NAME}-//"
 }
 
 # === Tampilkan Semua Node ===
@@ -446,62 +346,42 @@ function list_nodes() {
     echo -e "${CYAN}📊 Daftar Node Terdaftar:${RESET}"
     echo "--------------------------------------------------------------"
     
-    if [ "$SOLUTION_TYPE" == "nested" ]; then
-        printf "%-5s %-20s %-12s %-15s %-15s\n" "No" "Node ID" "Status" "CPU" "Memori"
-        echo "--------------------------------------------------------------"
+    printf "%-5s %-20s %-12s %-15s %-15s\n" "No" "Node ID" "Status" "CPU" "Memori"
+    echo "--------------------------------------------------------------"
+    
+    local all_nodes=($(get_all_nodes))
+    local failed_nodes=()
+    
+    for i in "${!all_nodes[@]}"; do
+        local node_id=${all_nodes[$i]}
+        local container="${BASE_CONTAINER_NAME}-${node_id}"
+        local cpu="N/A"
+        local mem="N/A"
+        local status="Tidak Aktif"
         
-        local all_nodes=($(get_all_nodes))
-        local failed_nodes=()
-        
-        for i in "${!all_nodes[@]}"; do
-            local node_id=${all_nodes[$i]}
-            local container="${BASE_CONTAINER_NAME}-${node_id}"
-            local cpu="N/A"
-            local mem="N/A"
-            local status="Tidak Aktif"
+        if docker inspect "$container" &>/dev/null; then
+            status=$(docker inspect -f '{{.State.Status}}' "$container" 2>/dev/null)
             
-            if docker inspect "$container" &>/dev/null; then
-                status=$(docker inspect -f '{{.State.Status}}' "$container" 2>/dev/null)
-                
-                if [[ "$status" == "running" ]]; then
-                    stats=$(docker stats --no-stream --format "{{.CPUPerc}}|{{.MemUsage}}" "$container" 2>/dev/null)
-                    cpu=$(echo "$stats" | cut -d'|' -f1)
-                    mem=$(echo "$stats" | cut -d'|' -f2 | cut -d'/' -f1 | xargs)
-                elif [[ "$status" == "exited" ]]; then
-                    failed_nodes+=("$node_id")
-                fi
+            if [[ "$status" == "running" ]]; then
+                stats=$(docker stats --no-stream --format "{{.CPUPerc}}|{{.MemUsage}}" "$container" 2>/dev/null)
+                cpu=$(echo "$stats" | cut -d'|' -f1)
+                mem=$(echo "$stats" | cut -d'|' -f2 | cut -d'/' -f1 | xargs)
+            elif [[ "$status" == "exited" ]]; then
+                failed_nodes+=("$node_id")
             fi
-            
-            printf "%-5s %-20s %-12s %-15s %-15s\n" "$((i+1))" "$node_id" "$status" "$cpu" "$mem"
+        fi
+        
+        printf "%-5s %-20s %-12s %-15s %-15s\n" "$((i+1))" "$node_id" "$status" "$cpu" "$mem"
+    done
+    
+    echo "--------------------------------------------------------------"
+    
+    if [ ${#failed_nodes[@]} -gt 0 ]; then
+        echo -e "${RED}⚠ Node gagal dijalankan (exited):${RESET}"
+        
+        for id in "${failed_nodes[@]}"; do
+            echo "- $id"
         done
-        
-        echo "--------------------------------------------------------------"
-        
-        if [ ${#failed_nodes[@]} -gt 0 ]; then
-            echo -e "${RED}⚠ Node gagal dijalankan (exited):${RESET}"
-            
-            for id in "${failed_nodes[@]}"; do
-                echo "- $id"
-            done
-        fi
-    else
-        printf "%-5s %-20s %-12s\n" "No" "Node ID" "Status"
-        echo "--------------------------------------------------------------"
-        
-        if [ -f /root/.nexus/node-id ]; then
-            local node_id=$(cat /root/.nexus/node-id)
-            local status="Tidak Aktif"
-            
-            if systemctl is-active --quiet nexus; then
-                status="Aktif"
-            fi
-            
-            printf "%-5s %-20s %-12s\n" "1" "$node_id" "$status"
-        else
-            echo "Tidak ada node yang terdaftar"
-        fi
-        
-        echo "--------------------------------------------------------------"
     fi
     
     read -p "Tekan enter untuk kembali ke menu..."
@@ -509,40 +389,26 @@ function list_nodes() {
 
 # === Lihat Log Node ===
 function view_logs() {
-    if [ "$SOLUTION_TYPE" == "nested" ]; then
-        local all_nodes=($(get_all_nodes))
-        
-        if [ ${#all_nodes[@]} -eq 0 ]; then
-            echo "Tidak ada node"
-            read -p "Tekan enter..."
-            return
-        fi
-        
-        echo "Pilih node untuk lihat log:"
-        
-        for i in "${!all_nodes[@]}"; do
-            echo "$((i+1)). ${all_nodes[$i]}"
-        done
-        
-        read -rp "Nomor: " choice
-        
-        if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice > 0 && choice <= ${#all_nodes[@]} )); then
-            local selected=${all_nodes[$((choice-1))]}
-            echo -e "${YELLOW}Menampilkan log node: $selected${RESET}"
-            docker logs -f "${BASE_CONTAINER_NAME}-${selected}"
-        fi
-    else
-        if [ "$SYSTEMD_AVAILABLE" = true ]; then
-            echo -e "${YELLOW}Menampilkan log Nexus dari systemd...${RESET}"
-            journalctl -u nexus -f
-        else
-            echo -e "${YELLOW}Menampilkan log Nexus dari file...${RESET}"
-            if [ -f /root/nexus-logs/nexus.log ]; then
-                tail -f /root/nexus-logs/nexus.log
-            else
-                echo -e "${RED}[!] File log tidak ditemukan${RESET}"
-            fi
-        fi
+    local all_nodes=($(get_all_nodes))
+    
+    if [ ${#all_nodes[@]} -eq 0 ]; then
+        echo "Tidak ada node"
+        read -p "Tekan enter..."
+        return
+    fi
+    
+    echo "Pilih node untuk lihat log:"
+    
+    for i in "${!all_nodes[@]}"; do
+        echo "$((i+1)). ${all_nodes[$i]}"
+    done
+    
+    read -rp "Nomor: " choice
+    
+    if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice > 0 && choice <= ${#all_nodes[@]} )); then
+        local selected=${all_nodes[$((choice-1))]}
+        echo -e "${YELLOW}Menampilkan log node: $selected${RESET}"
+        docker logs -f "${BASE_CONTAINER_NAME}-${selected}"
     fi
     
     read -p "Tekan enter..."
@@ -550,128 +416,364 @@ function view_logs() {
 
 # === Hapus Beberapa Node ===
 function batch_uninstall_nodes() {
-    if [ "$SOLUTION_TYPE" == "nested" ]; then
-        local all_nodes=($(get_all_nodes))
-        
-        echo "Masukkan nomor node yang ingin dihapus (pisahkan spasi):"
-        
-        for i in "${!all_nodes[@]}"; do
-            echo "$((i+1)). ${all_nodes[$i]}"
-        done
-        
-        read -rp "Nomor: " input
-        
-        for num in $input; do
-            if [[ "$num" =~ ^[0-9]+$ ]] && (( num > 0 && num <= ${#all_nodes[@]} )); then
-                uninstall_node "${all_nodes[$((num-1))]}"
-            else
-                echo "Lewati: $num"
-            fi
-        done
-    else
-        echo "Fitur ini hanya tersedia untuk solusi nested container"
-    fi
+    local all_nodes=($(get_all_nodes))
+    
+    echo "Masukkan nomor node yang ingin dihapus (pisahkan spasi):"
+    
+    for i in "${!all_nodes[@]}"; do
+        echo "$((i+1)). ${all_nodes[$i]}"
+    done
+    
+    read -rp "Nomor: " input
+    
+    for num in $input; do
+        if [[ "$num" =~ ^[0-9]+$ ]] && (( num > 0 && num <= ${#all_nodes[@]} )); then
+            uninstall_node "${all_nodes[$((num-1))]}"
+        else
+            echo "Lewati: $num"
+        fi
+    done
     
     read -p "Tekan enter..."
 }
 
 # === Hapus Semua Node ===
 function uninstall_all_nodes() {
-    if [ "$SOLUTION_TYPE" == "nested" ]; then
-        local all_nodes=($(get_all_nodes))
+    local all_nodes=($(get_all_nodes))
+    
+    echo "Yakin ingin hapus SEMUA node? (y/n)"
+    read -rp "Konfirmasi: " confirm
+    
+    if [[ "$confirm" =~ ^[Yy]$ ]]; then
+        for node in "${all_nodes[@]}"; do
+            uninstall_node "$node"
+        done
         
-        echo "Yakin ingin hapus SEMUA node? (y/n)"
-        read -rp "Konfirmasi: " confirm
-        
-        if [[ "$confirm" =~ ^[Yy]$ ]]; then
-            for node in "${all_nodes[@]}"; do
-                uninstall_node "$node"
-            done
-            
-            echo "Semua node dihapus."
-        else
-            echo "Dibatalkan."
-        fi
+        echo "Semua node dihapus."
     else
-        echo "Yakin ingin hapus node? (y/n)"
-        read -rp "Konfirmasi: " confirm
-        
-        if [[ "$confirm" =~ ^[Yy]$ ]]; then
-            uninstall_node "$(cat /root/.nexus/node-id)"
-            echo "Node dihapus."
-        else
-            echo "Dibatalkan."
-        fi
+        echo "Dibatalkan."
     fi
     
     read -p "Tekan enter..."
 }
 
-# === Pilih Solusi ===
-function choose_solution() {
-    show_header
-    echo -e "${CYAN}Pilih solusi untuk menjalankan Nexus Network:${RESET}"
-    echo ""
-    echo -e "${GREEN}1.${RESET} Nested Container (Ubuntu 24.04 di dalam container saat ini)"
-    echo -e "   ${YELLOW}✓ Cocok untuk Ubuntu 22.04 dengan Docker${RESET}"
-    echo -e "   ${YELLOW}✓ Tidak perlu mengubah template VPS${RESET}"
-    echo -e "   ${YELLOW}✓ Memanfaatkan Docker-in-Docker${RESET}"
-    echo ""
-    echo -e "${GREEN}2.${RESET} Instalasi Langsung (untuk Ubuntu 24.04)"
-    echo -e "   ${YELLOW}✓ Lebih sederhana, tanpa nested container${RESET}"
-    echo -e "   ${YELLOW}✓ Performa potensial lebih baik${RESET}"
-    echo -e "   ${YELLOW}✓ Memerlukan Ubuntu 24.04${RESET}"
-    echo ""
-    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
-    
-    read -rp "Pilih solusi (1-2): " solution_choice
-    
-    case $solution_choice in
-        1)
-            SOLUTION_TYPE="nested"
-            echo -e "${GREEN}[✓] Anda memilih Solusi Nested Container${RESET}"
-            ;;
-        2)
-            SOLUTION_TYPE="direct"
-            echo -e "${GREEN}[✓] Anda memilih Solusi Instalasi Langsung${RESET}"
-            ;;
-        *)
-            echo -e "${RED}[!] Pilihan tidak valid. Menggunakan Solusi Nested Container secara default${RESET}"
-            SOLUTION_TYPE="nested"
-            ;;
-    esac
-    
-    # Simpan pilihan solusi
+# === Inisialisasi Solusi ===
+function initialize_solution() {
+    # Selalu gunakan nested container
+    SOLUTION_TYPE="nested"
     echo "$SOLUTION_TYPE" > "${WORKSPACE_DIR}/.nexus_solution_type"
-    
-    echo ""
-    read -p "Tekan enter untuk melanjutkan..."
 }
 
-# === Load Solusi yang Tersimpan ===
-function load_saved_solution() {
-    if [ -f "${WORKSPACE_DIR}/.nexus_solution_type" ]; then
-        SOLUTION_TYPE=$(cat "${WORKSPACE_DIR}/.nexus_solution_type")
-        echo -e "${GREEN}[✓] Memuat solusi tersimpan: $SOLUTION_TYPE${RESET}"
-    else
-        # Default ke nested jika belum ada pilihan tersimpan
-        SOLUTION_TYPE="nested"
+# === Fungsi restart semua node ===
+function restart_all_nodes() {
+    local all_nodes=($(get_all_nodes))
+    echo -e "${CYAN}♻  Memulai restart otomatis semua node...${RESET}"
+    
+    for node_id in "${all_nodes[@]}"; do
+        local container="${BASE_CONTAINER_NAME}-${node_id}"
+        echo -e "${YELLOW}🔄 Restarting node ${node_id}...${RESET}"
+        docker restart "$container" >/dev/null 2>&1
+    done
+    
+    echo -e "${GREEN}✅ Semua node telah di-restart${RESET}"
+    echo -e "${CYAN}⏱  Next restart: $(date -d "+${REFRESH_INTERVAL_MINUTES} minutes" "+%H:%M:%S")${RESET}"
+}
+
+# === Setup cron untuk auto-refresh ===
+function setup_auto_refresh() {
+    check_cron
+    mkdir -p "$LOG_DIR"
+    
+    # Cek apakah auto-refresh sudah aktif
+    local is_active=false
+    if crontab -l 2>/dev/null | grep -q "restart_nexus_nodes"; then
+        is_active=true
     fi
+    
+    show_header
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+    echo -e "                           🔄 PENGATURAN AUTO-REFRESH NODE"
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+    
+    if [ "$is_active" = true ]; then
+        echo -e "${GREEN}Status: Auto-refresh AKTIF${RESET}"
+        echo -e "${CYAN}Interval: Setiap ${REFRESH_INTERVAL_MINUTES} menit${RESET}"
+        echo -e "${CYAN}Next restart: $(date -d "+${REFRESH_INTERVAL_MINUTES} minutes" "+%H:%M:%S")${RESET}"
+        echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+        
+        echo -e "${GREEN}1.${RESET} Ubah interval refresh (saat ini: ${REFRESH_INTERVAL_MINUTES} menit)"
+        echo -e "${GREEN}2.${RESET} Matikan auto-refresh"
+        echo -e "${GREEN}3.${RESET} Restart semua node sekarang"
+        echo -e "${GREEN}4.${RESET} Kembali ke menu utama"
+        
+        read -rp "Pilih opsi (1-4): " choice
+        
+        case $choice in
+            1)
+                read -rp "Masukkan interval refresh baru (dalam menit): " new_interval
+                if [[ "$new_interval" =~ ^[0-9]+$ ]] && [ "$new_interval" -gt 0 ]; then
+                    REFRESH_INTERVAL_MINUTES=$new_interval
+                    # Update konfigurasi
+                    sed -i "s/^REFRESH_INTERVAL_MINUTES=.*/REFRESH_INTERVAL_MINUTES=$new_interval  # Interval restart otomatis/" "$0"
+                    # Aktifkan ulang dengan interval baru
+                    crontab -l | grep -v "restart_nexus_nodes" | crontab -
+                    (crontab -l 2>/dev/null; echo "*/${REFRESH_INTERVAL_MINUTES} * * * * $PWD/$0 --restart-nodes >> $LOG_DIR/refresh.log 2>&1") | crontab -
+                    AUTO_REFRESH_ENABLED=true
+                    sed -i "s/^AUTO_REFRESH_ENABLED=.*/AUTO_REFRESH_ENABLED=true   # Status auto-refresh/" "$0"
+                    echo -e "${GREEN}✅ Interval refresh diubah menjadi ${new_interval} menit${RESET}"
+                else
+                    echo -e "${RED}Interval tidak valid. Harus berupa angka positif.${RESET}"
+                fi
+                ;;
+            2)
+                crontab -l | grep -v "restart_nexus_nodes" | crontab -
+                AUTO_REFRESH_ENABLED=false
+                sed -i "s/^AUTO_REFRESH_ENABLED=.*/AUTO_REFRESH_ENABLED=false   # Status auto-refresh/" "$0"
+                echo -e "${YELLOW}🔄 Auto-refresh dinonaktifkan${RESET}"
+                ;;
+            3)
+                restart_all_nodes
+                ;;
+            4)
+                return
+                ;;
+            *)
+                echo -e "${RED}Pilihan tidak valid.${RESET}"
+                ;;
+        esac
+    else
+        echo -e "${RED}Status: Auto-refresh TIDAK AKTIF${RESET}"
+        echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+        
+        echo -e "${GREEN}1.${RESET} Aktifkan auto-refresh (interval: ${REFRESH_INTERVAL_MINUTES} menit)"
+        echo -e "${GREEN}2.${RESET} Ubah interval refresh (saat ini: ${REFRESH_INTERVAL_MINUTES} menit)"
+        echo -e "${GREEN}3.${RESET} Kembali ke menu utama"
+        
+        read -rp "Pilih opsi (1-3): " choice
+        
+        case $choice in
+            1)
+                crontab -l | grep -v "restart_nexus_nodes" | crontab -
+                (crontab -l 2>/dev/null; echo "*/${REFRESH_INTERVAL_MINUTES} * * * * $PWD/$0 --restart-nodes >> $LOG_DIR/refresh.log 2>&1") | crontab -
+                AUTO_REFRESH_ENABLED=true
+                sed -i "s/^AUTO_REFRESH_ENABLED=.*/AUTO_REFRESH_ENABLED=true   # Status auto-refresh/" "$0"
+                echo -e "${GREEN}✅ Auto-refresh diaktifkan setiap ${REFRESH_INTERVAL_MINUTES} menit${RESET}"
+                echo -e "${CYAN}⏱  Next restart: $(date -d "+${REFRESH_INTERVAL_MINUTES} minutes" "+%H:%M:%S")${RESET}"
+                restart_all_nodes
+                ;;
+            2)
+                read -rp "Masukkan interval refresh baru (dalam menit): " new_interval
+                if [[ "$new_interval" =~ ^[0-9]+$ ]] && [ "$new_interval" -gt 0 ]; then
+                    REFRESH_INTERVAL_MINUTES=$new_interval
+                    sed -i "s/^REFRESH_INTERVAL_MINUTES=.*/REFRESH_INTERVAL_MINUTES=$new_interval  # Interval restart otomatis/" "$0"
+                    echo -e "${GREEN}✅ Interval refresh diubah menjadi ${new_interval} menit${RESET}"
+                else
+                    echo -e "${RED}Interval tidak valid. Harus berupa angka positif.${RESET}"
+                fi
+                ;;
+            3)
+                return
+                ;;
+            *)
+                echo -e "${RED}Pilihan tidak valid.${RESET}"
+                ;;
+        esac
+    fi
+    
+    read -p "Tekan enter untuk kembali..."
+    setup_auto_refresh
+}
+
+# === Periksa Cron ===
+function check_cron() {
+    if ! command -v cron >/dev/null 2>&1; then
+        echo -e "${YELLOW}⚠ Cron belum tersedia. Menginstal cron...${RESET}"
+        apt update >/dev/null 2>&1
+        apt install -y cron >/dev/null 2>&1
+        systemctl enable cron >/dev/null 2>&1
+        systemctl start cron >/dev/null 2>&1
+        echo -e "${GREEN}✅ Cron berhasil diinstal${RESET}"
+    fi
+}
+
+# === Cleanup System Penuh ===
+function full_system_cleanup() {
+    echo -e "${YELLOW}⚠️  PERINGATAN: Ini akan membersihkan SELURUH SISTEM secara menyeluruh!${RESET}"
+    echo -e "${RED}Semua container, image, volume, dan network Docker akan dihapus!${RESET}"
+    echo -e "${RED}Semua proses zombie dan proses yang tidak perlu akan dihentikan!${RESET}"
+    echo -e "${RED}RAM dan cache sistem akan dibersihkan!${RESET}"
+    echo -e "${RED}Semua log dan file temporary akan dihapus!${RESET}"
+    echo ""
+    echo "Apakah Anda yakin ingin melanjutkan? (ketik 'YES' untuk konfirmasi)"
+    read -rp "Konfirmasi: " confirm
+    
+    if [[ "$confirm" == "YES" ]]; then
+        echo -e "${CYAN}🧹 Memulai pembersihan sistem penuh dan menyeluruh...${RESET}"
+        
+        # 1. Tampilkan status sistem sebelum cleanup
+        echo -e "${YELLOW}1. Status sistem sebelum pembersihan:${RESET}"
+        echo "RAM Usage: $(free -h | awk '/^Mem:/ {print $3"/"$2}')"
+        echo "Disk Usage: $(df -h / | awk 'NR==2 {print $3"/"$2" ("$5")"}')"
+        echo "Running Processes: $(ps aux | wc -l)"
+        echo "Zombie Processes: $(ps aux | awk '$8 ~ /^Z/ { count++ } END { print count+0 }')"
+        
+        # 2. Kill semua proses yang tidak perlu dan zombie processes
+        echo -e "${YELLOW}2. Menghentikan proses zombie dan proses tidak perlu...${RESET}"
+        # Kill zombie processes
+        ps aux | awk '$8 ~ /^Z/ { print $2 }' | xargs -r kill -9 2>/dev/null || true
+        # Kill high CPU/memory processes (except essential ones)
+        ps aux --sort=-%cpu | awk 'NR>1 && $3>50 && $11!~/systemd|kernel|init|ssh|bash|docker/ {print $2}' | head -10 | xargs -r kill -15 2>/dev/null || true
+        ps aux --sort=-%mem | awk 'NR>1 && $4>20 && $11!~/systemd|kernel|init|ssh|bash|docker/ {print $2}' | head -10 | xargs -r kill -15 2>/dev/null || true
+        
+        # 3. Stop dan hapus semua container Nexus
+        echo -e "${YELLOW}3. Menghentikan semua container Nexus...${RESET}"
+        if [ "$SOLUTION_TYPE" == "nested" ]; then
+            docker ps -a --format "{{.Names}}" | grep "^${BASE_CONTAINER_NAME}-" | xargs -r docker rm -f
+        else
+            if [ "$SYSTEMD_AVAILABLE" = true ]; then
+                systemctl stop nexus 2>/dev/null || true
+            else
+                screen -S nexus -X quit >/dev/null 2>&1 || true
+                pkill -f "nexus-network" 2>/dev/null || true
+            fi
+        fi
+        
+        # 4. Stop semua container Docker yang berjalan
+        echo -e "${YELLOW}4. Menghentikan semua container Docker...${RESET}"
+        if command -v docker &>/dev/null; then
+            docker stop $(docker ps -q) 2>/dev/null || true
+        fi
+        
+        # 5. Hapus semua container Docker
+        echo -e "${YELLOW}5. Menghapus semua container Docker...${RESET}"
+        if command -v docker &>/dev/null; then
+            docker container prune -f
+            docker rm -f $(docker ps -aq) 2>/dev/null || true
+        fi
+        
+        # 6. Hapus semua image Docker
+        echo -e "${YELLOW}6. Menghapus semua image Docker...${RESET}"
+        if command -v docker &>/dev/null; then
+            docker image prune -a -f
+            docker rmi -f $(docker images -q) 2>/dev/null || true
+        fi
+        
+        # 7. Hapus semua volume Docker
+        echo -e "${YELLOW}7. Menghapus semua volume Docker...${RESET}"
+        if command -v docker &>/dev/null; then
+            docker volume prune -f
+            docker volume rm $(docker volume ls -q) 2>/dev/null || true
+        fi
+        
+        # 8. Hapus semua network Docker
+        echo -e "${YELLOW}8. Menghapus semua network Docker...${RESET}"
+        if command -v docker &>/dev/null; then
+            docker network prune -f
+        fi
+        
+        # 9. Hapus build cache Docker
+        echo -e "${YELLOW}9. Menghapus build cache Docker...${RESET}"
+        if command -v docker &>/dev/null; then
+            docker builder prune -a -f
+        fi
+        
+        # 10. Hapus system Docker secara menyeluruh
+        echo -e "${YELLOW}10. Pembersihan sistem Docker menyeluruh...${RESET}"
+        if command -v docker &>/dev/null; then
+            docker system prune -a -f --volumes
+        fi
+        
+        # 11. Bersihkan RAM dan cache sistem
+        echo -e "${YELLOW}11. Membersihkan RAM dan cache sistem...${RESET}"
+        sync
+        echo 3 > /proc/sys/vm/drop_caches 2>/dev/null || true
+        sysctl -w vm.drop_caches=3 2>/dev/null || true
+        
+        # 12. Hapus semua log Nexus
+        echo -e "${YELLOW}12. Menghapus semua log Nexus...${RESET}"
+        rm -rf "$LOG_DIR"
+        rm -rf /root/nexus-logs
+        
+        # 13. Hapus semua cron job Nexus
+        echo -e "${YELLOW}13. Menghapus semua cron job Nexus...${RESET}"
+        rm -f /etc/cron.d/nexus-log-cleanup-*
+        
+        # 14. Bersihkan semua log sistem
+        echo -e "${YELLOW}14. Membersihkan semua log sistem...${RESET}"
+        journalctl --vacuum-time=1h 2>/dev/null || true
+        > /var/log/syslog 2>/dev/null || true
+        > /var/log/kern.log 2>/dev/null || true
+        > /var/log/auth.log 2>/dev/null || true
+        find /var/log -name "*.log" -exec truncate -s 0 {} \; 2>/dev/null || true
+        find /var/log -name "*.log.*" -delete 2>/dev/null || true
+        
+        # 15. Bersihkan temporary files dan cache
+        echo -e "${YELLOW}15. Membersihkan file temporary dan cache...${RESET}"
+        rm -rf /tmp/* 2>/dev/null || true
+        rm -rf /var/tmp/* 2>/dev/null || true
+        rm -rf ~/.cache/* 2>/dev/null || true
+        rm -rf /root/.cache/* 2>/dev/null || true
+        rm -rf /var/cache/* 2>/dev/null || true
+        
+        # 16. Bersihkan package cache
+        echo -e "${YELLOW}16. Membersihkan package cache...${RESET}"
+        apt clean 2>/dev/null || true
+        apt autoclean 2>/dev/null || true
+        apt autoremove -y --purge 2>/dev/null || true
+        
+        # 17. Bersihkan swap jika ada
+        echo -e "${YELLOW}17. Membersihkan swap...${RESET}"
+        swapoff -a 2>/dev/null || true
+        swapon -a 2>/dev/null || true
+        
+        # 18. Defragmentasi dan optimasi filesystem
+        echo -e "${YELLOW}18. Optimasi filesystem...${RESET}"
+        sync
+        fstrim -av 2>/dev/null || true
+        
+        # 19. Reset network connections
+        echo -e "${YELLOW}19. Reset koneksi network...${RESET}"
+        systemctl restart networking 2>/dev/null || true
+        systemctl restart systemd-networkd 2>/dev/null || true
+        
+        # 20. Restart services penting
+        echo -e "${YELLOW}20. Restart services sistem...${RESET}"
+        if command -v docker &>/dev/null; then
+            systemctl restart docker 2>/dev/null || true
+        fi
+        systemctl restart cron 2>/dev/null || true
+        
+        # 21. Force garbage collection
+        echo -e "${YELLOW}21. Force garbage collection...${RESET}"
+        sync
+        echo 1 > /proc/sys/vm/compact_memory 2>/dev/null || true
+        
+        # 22. Tampilkan status sistem setelah cleanup
+        echo -e "${GREEN}✅ Pembersihan sistem penuh selesai!${RESET}"
+        echo -e "${CYAN}📊 Status sistem setelah pembersihan:${RESET}"
+        echo "RAM Usage: $(free -h | awk '/^Mem:/ {print $3"/"$2}')"
+        echo "Disk Usage: $(df -h / | awk 'NR==2 {print $3"/"$2" ("$5")"}')"
+        echo "Running Processes: $(ps aux | wc -l)"
+        echo "Zombie Processes: $(ps aux | awk '$8 ~ /^Z/ { count++ } END { print count+0 }')"
+        
+    else
+        echo -e "${YELLOW}Pembersihan dibatalkan.${RESET}"
+    fi
+    read -p "Tekan enter untuk kembali ke menu..."
 }
 
 # === MENU UTAMA ===
 function main_menu() {
     while true; do
         show_header
-        echo -e "${CYAN}Solusi Aktif: ${YELLOW}$SOLUTION_TYPE${RESET}"
         echo ""
         echo -e "${GREEN} 1.${RESET} ➕ Instal & Jalankan Node"
         echo -e "${GREEN} 2.${RESET} 📊 Lihat Status Semua Node"
         echo -e "${GREEN} 3.${RESET} ❌ Hapus Node Tertentu"
         echo -e "${GREEN} 4.${RESET} 🧾 Lihat Log Node"
         echo -e "${GREEN} 5.${RESET} 💥 Hapus Semua Node"
-        echo -e "${GREEN} 6.${RESET} 🔄 Ganti Solusi"
-        echo -e "${GREEN} 7.${RESET} ℹ️  Informasi Sistem"
+        echo -e "${GREEN} 6.${RESET} 🔄 Auto-Refresh Node"
+        echo -e "${GREEN} 7.${RESET} 🧹 Cleanup System Penuh"
         echo -e "${GREEN} 8.${RESET} 🚪 Keluar"
         echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
         
@@ -679,29 +781,19 @@ function main_menu() {
         
         case $pilihan in
             1)
-                if [ "$SOLUTION_TYPE" == "nested" ]; then
-                    # Periksa Docker
-                    if ! command -v docker &> /dev/null; then
-                        echo -e "${RED}[!] Docker tidak terinstal. Menginstal Docker...${RESET}"
-                        install_docker
-                    fi
-                    
-                    # Setup nested container
-                    setup_nested_container
-                    
-                    # Jalankan container
-                    read -rp "Masukkan NODE_ID: " NODE_ID
-                    [ -z "$NODE_ID" ] && echo "NODE_ID tidak boleh kosong." && read -p "Tekan enter..." && continue
-                    run_container "$NODE_ID"
-                else
-                    # Setup direct installation
-                    setup_direct_installation
-                    
-                    # Jalankan Nexus langsung
-                    read -rp "Masukkan NODE_ID: " NODE_ID
-                    [ -z "$NODE_ID" ] && echo "NODE_ID tidak boleh kosong." && read -p "Tekan enter..." && continue
-                    run_direct "$NODE_ID"
+                # Periksa Docker
+                if ! command -v docker &> /dev/null; then
+                    echo -e "${RED}[!] Docker tidak terinstal. Menginstal Docker...${RESET}"
+                    install_docker
                 fi
+                
+                # Setup nested container
+                setup_nested_container
+                
+                # Jalankan container
+                read -rp "Masukkan NODE_ID: " NODE_ID
+                [ -z "$NODE_ID" ] && echo "NODE_ID tidak boleh kosong." && read -p "Tekan enter..." && continue
+                run_container "$NODE_ID"
                 
                 read -p "Tekan enter..."
                 ;;
@@ -718,37 +810,10 @@ function main_menu() {
                 uninstall_all_nodes 
                 ;;
             6) 
-                choose_solution 
+                setup_auto_refresh 
                 ;;
             7)
-                show_header
-                echo -e "${CYAN}ℹ️  Informasi Sistem:${RESET}"
-                echo "--------------------------------------------------------------"
-                echo -e "${GREEN}Versi Ubuntu:${RESET} $UBUNTU_VERSION"
-                echo -e "${GREEN}Versi GLIBC:${RESET} $GLIBC_VERSION"
-                
-                if [ "$DOCKER_AVAILABLE" == "true" ]; then
-                    echo -e "${GREEN}Docker:${RESET} Terinstal (Versi $DOCKER_VERSION)"
-                else
-                    echo -e "${RED}Docker:${RESET} Tidak terinstal"
-                fi
-                
-                if [ "$IN_CONTAINER" == "true" ]; then
-                    echo -e "${GREEN}Container:${RESET} Berjalan di dalam container"
-                else
-                    echo -e "${GREEN}Container:${RESET} Berjalan di host"
-                fi
-                
-                if [ "$IS_PRIVILEGED" == "true" ]; then
-                    echo -e "${GREEN}Privileged:${RESET} Ya"
-                else
-                    echo -e "${RED}Privileged:${RESET} Tidak"
-                fi
-                
-                echo -e "${GREEN}Solusi Aktif:${RESET} $SOLUTION_TYPE"
-                echo "--------------------------------------------------------------"
-                
-                read -p "Tekan enter untuk kembali ke menu..."
+                full_system_cleanup
                 ;;
             8) 
                 echo "Keluar..."; 
@@ -765,12 +830,7 @@ function main_menu() {
 # === MAIN EXECUTION ===
 show_header
 detect_environment
-load_saved_solution
-
-# Jika belum ada solusi yang dipilih, minta pengguna memilih
-if [ -z "$SOLUTION_TYPE" ]; then
-    choose_solution
-fi
+initialize_solution
 
 # Jalankan menu utama
 main_menu
