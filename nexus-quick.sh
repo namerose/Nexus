@@ -16,27 +16,11 @@ BLUE='\033[0;34m'
 MAGENTA='\033[0;35m'
 RESET='\033[0m'
 
-# === Ambil Versi CLI Terbaru ===
-function get_latest_cli_version() {
-    local latest_version=""
-    if command -v curl >/dev/null 2>&1; then
-        latest_version=$(curl -s https://api.github.com/repos/nexus-xyz/nexus-cli/releases/latest 2>/dev/null | grep '"tag_name"' | cut -d'"' -f4 2>/dev/null)
-    fi
-    
-    if [ -z "$latest_version" ]; then
-        echo "Unknown"
-    else
-        echo "$latest_version"
-    fi
-}
-
 # === Header Tampilan ===
 function show_header() {
     clear
-    local cli_version=$(get_latest_cli_version)
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo -e "                    NEXUS - Node (Quickpod Previlege Edition)"
-    echo -e "                      CLI Versi Terbaru: ${YELLOW}${cli_version}${CYAN}"
+    echo -e "                           NEXUS - Node (Quickpod Previlege Edition)"
     echo -e "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
 }
 
@@ -170,32 +154,9 @@ function install_docker() {
     echo ""
 }
 
-# === Hapus Image Lama ===
-function clean_old_images() {
-    echo -e "${YELLOW}[*] Menghapus image dan cache Docker lama...${RESET}"
-    
-    # Hapus semua container nexus yang ada
-    docker ps -aq --filter "name=${BASE_CONTAINER_NAME}" | xargs -r docker rm -f 2>/dev/null || true
-    
-    # Hapus image nexus-node
-    docker rmi -f "$IMAGE_NAME" 2>/dev/null || true
-    docker rmi -f $(docker images --filter "reference=nexus-node" -q) 2>/dev/null || true
-    
-    # Hapus image ubuntu:24.04 untuk memaksa download fresh
-    docker rmi -f ubuntu:24.04 2>/dev/null || true
-    
-    # Bersihkan build cache
-    docker builder prune -f 2>/dev/null || true
-    
-    echo -e "${GREEN}[✓] Cache dan image lama berhasil dihapus${RESET}"
-}
-
 # === Solusi 1: Nested Container dengan Ubuntu 24.04 ===
 function setup_nested_container() {
     echo -e "${CYAN}[*] Menyiapkan nested container dengan Ubuntu 24.04...${RESET}"
-    
-    # Hapus image lama terlebih dahulu
-    clean_old_images
     
     # Buat direktori untuk menyimpan Dockerfile dan file konfigurasi
     TEMP_DIR="${WORKSPACE_DIR}/nexus-setup-temp"
@@ -216,8 +177,8 @@ RUN apt-get update && apt-get install -y \\
     ca-certificates \\
     && rm -rf /var/lib/apt/lists/*
 
-# Memaksa download CLI terbaru dengan timestamp
-RUN curl -sSL https://cli.nexus.xyz/?t=\$(date +%s) | NONINTERACTIVE=1 sh \\
+# Install Nexus CLI
+RUN curl -sSL https://cli.nexus.xyz/ | NONINTERACTIVE=1 sh \\
     && ln -sf /root/.nexus/bin/nexus-network /usr/local/bin/nexus-network
 
 # Copy entrypoint script
@@ -263,11 +224,11 @@ fi
 tail -f /root/nexus.log
 EOF
     
-    # Build Docker image dengan no-cache
-    echo -e "${CYAN}[*] Building Docker image untuk Ubuntu 24.04 dengan CLI versi terbaru...${RESET}"
-    docker build --no-cache -t "$IMAGE_NAME" "${TEMP_DIR}"
+    # Build Docker image
+    echo -e "${CYAN}[*] Building Docker image untuk Ubuntu 24.04...${RESET}"
+    docker build -t "$IMAGE_NAME" "${TEMP_DIR}"
     
-    echo -e "${GREEN}[✓] Docker image berhasil dibuild dengan CLI versi terbaru${RESET}"
+    echo -e "${GREEN}[✓] Docker image berhasil dibuild${RESET}"
     echo ""
 }
 
@@ -646,77 +607,6 @@ function uninstall_all_nodes() {
     read -p "Tekan enter..."
 }
 
-# === Reset Lengkap ===
-function full_reset() {
-    echo -e "${RED}⚠️  PERINGATAN: Ini akan menghapus SEMUA data Nexus dan cache Docker!${RESET}"
-    echo "- Semua container Nexus akan dihapus"
-    echo "- Semua image Docker Nexus akan dihapus"
-    echo "- Cache Docker akan dibersihkan"
-    echo "- Log files akan dihapus"
-    echo "- Script dan service akan dihapus"
-    echo ""
-    echo "Setelah reset, node akan menggunakan CLI versi terbaru saat dijalankan ulang."
-    echo ""
-    read -rp "Ketik 'RESET' untuk konfirmasi: " confirm
-    
-    if [[ "$confirm" == "RESET" ]]; then
-        echo -e "${YELLOW}[*] Memulai reset lengkap...${RESET}"
-        
-        if [ "$SOLUTION_TYPE" == "nested" ]; then
-            # Hapus semua node container
-            local all_nodes=($(get_all_nodes))
-            for node in "${all_nodes[@]}"; do
-                uninstall_node "$node"
-            done
-            
-            # Bersihkan image dan cache
-            clean_old_images
-            
-            # Hapus direktori log
-            rm -rf "$LOG_DIR"
-            
-            # Hapus direktori temp
-            rm -rf "${WORKSPACE_DIR}/nexus-setup-temp"
-        else
-            # Hapus node direct installation
-            if [ -f /root/.nexus/node-id ]; then
-                uninstall_node "$(cat /root/.nexus/node-id)"
-            fi
-            
-            # Hapus direktori nexus
-            rm -rf /root/.nexus
-            rm -rf /root/nexus-scripts
-            rm -rf /root/nexus-logs
-            
-            # Hapus service files
-            rm -f /etc/systemd/system/nexus.service
-            rm -f /etc/default/nexus
-            
-            if [ "$SYSTEMD_AVAILABLE" = true ]; then
-                systemctl daemon-reload 2>/dev/null || true
-            fi
-            
-            # Hapus crontab entries
-            if command -v crontab >/dev/null 2>&1; then
-                (crontab -l 2>/dev/null || echo "") | grep -v "run-nexus.sh" | crontab -
-            fi
-        fi
-        
-        # Hapus file konfigurasi solusi
-        rm -f "${WORKSPACE_DIR}/.nexus_solution_type"
-        
-        echo -e "${GREEN}✅ Reset lengkap berhasil!${RESET}"
-        echo "Sekarang Anda dapat menjalankan node baru dengan CLI versi terbaru."
-        echo "Silakan pilih solusi kembali pada menu berikutnya."
-        
-        # Reset solution type
-        SOLUTION_TYPE=""
-    else
-        echo "Reset dibatalkan."
-    fi
-    read -p "Tekan enter..."
-}
-
 # === Pilih Solusi ===
 function choose_solution() {
     show_header
@@ -781,12 +671,11 @@ function main_menu() {
         echo -e "${GREEN} 4.${RESET} 🧾 Lihat Log Node"
         echo -e "${GREEN} 5.${RESET} 💥 Hapus Semua Node"
         echo -e "${GREEN} 6.${RESET} 🔄 Ganti Solusi"
-        echo -e "${GREEN} 7.${RESET} 🔥 Reset Lengkap (Force Update CLI)"
-        echo -e "${GREEN} 8.${RESET} ℹ️  Informasi Sistem"
-        echo -e "${GREEN} 9.${RESET} 🚪 Keluar"
+        echo -e "${GREEN} 7.${RESET} ℹ️  Informasi Sistem"
+        echo -e "${GREEN} 8.${RESET} 🚪 Keluar"
         echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
         
-        read -rp "Pilih menu (1-9): " pilihan
+        read -rp "Pilih menu (1-8): " pilihan
         
         case $pilihan in
             1)
@@ -831,10 +720,7 @@ function main_menu() {
             6) 
                 choose_solution 
                 ;;
-            7) 
-                full_reset 
-                ;;
-            8)
+            7)
                 show_header
                 echo -e "${CYAN}ℹ️  Informasi Sistem:${RESET}"
                 echo "--------------------------------------------------------------"
@@ -864,7 +750,7 @@ function main_menu() {
                 
                 read -p "Tekan enter untuk kembali ke menu..."
                 ;;
-            9) 
+            8) 
                 echo "Keluar..."; 
                 exit 0 
                 ;;
