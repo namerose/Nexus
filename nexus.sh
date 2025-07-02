@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -e
 
 # === Konfigurasi dasar ===
@@ -8,6 +8,10 @@ LOG_DIR="/root/nexus_logs"
 REFRESH_INTERVAL_MINUTES=10  # Interval restart otomatis
 AUTO_REFRESH_ENABLED=false   # Status auto-refresh
 
+# === Global Variables ===
+CURRENT_NEXUS_VERSION=""
+LATEST_CLI_VERSION=""
+
 # === Warna terminal ===
 GREEN='\033[0;32m'
 RED='\033[0;31m'
@@ -15,22 +19,62 @@ YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
 RESET='\033[0m'
 
-# === Ambil Versi CLI ===
-function get_cli_version() {
-    local version="Unknown"
-    if command -v curl >/dev/null 2>&1; then
-        version=$(curl -s "https://api.github.com/repos/nexus-xyz/nexus-cli/releases/latest" 2>/dev/null | grep '"tag_name"' | cut -d'"' -f4)
-        if [ -z "$version" ]; then
-            version="Unknown"
+# === Deteksi Versi CLI Terbaru ===
+function get_latest_cli_version() {
+    if [[ -z "$LATEST_CLI_VERSION" ]]; then
+        if command -v curl >/dev/null 2>&1; then
+            LATEST_CLI_VERSION=$(curl -s "https://api.github.com/repos/nexus-xyz/nexus-cli/releases/latest" | grep '"tag_name":' | sed 's/.*"tag_name": "\(.*\)".*/\1/' 2>/dev/null || echo "Unknown")
+        else
+            LATEST_CLI_VERSION="Unknown"
         fi
     fi
-    echo "$version"
+    echo "$LATEST_CLI_VERSION"
+}
+
+# === Deteksi Versi yang Sedang Digunakan ===
+function get_current_system_version() {
+    if [[ -z "$CURRENT_NEXUS_VERSION" ]]; then
+        # Check if there are any running containers
+        local running_containers=$(docker ps --format "{{.Names}}" | grep "^${BASE_CONTAINER_NAME}-" | head -1)
+        
+        if [[ -n "$running_containers" ]]; then
+            # Try to get version from container logs
+            local version_info=$(docker logs "$running_containers" 2>/dev/null | grep -i "version\|Version" | head -1 | grep -o "v[0-9]\+\.[0-9]\+\.[0-9]\+" | head -1 2>/dev/null || echo "")
+            
+            if [[ -n "$version_info" ]]; then
+                CURRENT_NEXUS_VERSION="$version_info"
+            else
+                # Check if it's a GitHub version from container environment
+                local github_version=$(docker inspect "$running_containers" --format='{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null | grep "VERSION" | cut -d'=' -f2 2>/dev/null || echo "")
+                
+                if [[ -n "$github_version" ]]; then
+                    CURRENT_NEXUS_VERSION="$github_version"
+                else
+                    # Check if we have any stored version info
+                    if [[ -n "$NEXUS_VERSION" && "$NEXUS_VERSION" != "latest" ]]; then
+                        CURRENT_NEXUS_VERSION="$NEXUS_VERSION"
+                    else
+                        CURRENT_NEXUS_VERSION="Latest (Optimized)"
+                    fi
+                fi
+            fi
+        else
+            # No running containers, check if we have stored version
+            if [[ -n "$NEXUS_VERSION" && "$NEXUS_VERSION" != "latest" ]]; then
+                CURRENT_NEXUS_VERSION="$NEXUS_VERSION (Not Running)"
+            else
+                CURRENT_NEXUS_VERSION="Not Installed"
+            fi
+        fi
+    fi
+    echo "$CURRENT_NEXUS_VERSION"
 }
 
 # === Header Tampilan ===
 function show_header() {
     clear
-    local cli_version=$(get_cli_version)
+    local latest_version=$(get_latest_cli_version)
+    local current_version=$(get_current_system_version)
     local auto_refresh_status="OFF"
     
     # Cek apakah auto-refresh aktif berdasarkan variabel status
@@ -51,8 +95,9 @@ function show_header() {
     
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo -e "           NEXUS - Node"
-    echo -e "   Latest CLI Version: ${cli_version}"
-    echo -e "   Auto-refresh: ${auto_refresh_status}"
+    echo -e "   📦 Latest CLI Version: ${latest_version}"
+    echo -e "   🔧 System Version: ${current_version}"
+    echo -e "   🔄 Auto-refresh: ${auto_refresh_status}"
     echo -e "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
 }
 
@@ -82,14 +127,199 @@ function check_cron() {
     fi
 }
 
+# === Pilih Versi Nexus ===
+function select_version() {
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo -e "           PILIH VERSI NEXUS CLI"
+    echo -e "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+    echo -e "${GREEN} 1.${RESET} 🚀 Latest Version (Optimized - Recommended)"
+    echo -e "${GREEN} 2.${RESET} 📦 Specific Version dari GitHub"
+    echo -e "${GREEN} 3.${RESET} 📋 Lihat Available Versions"
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+    
+    read -rp "Pilih opsi (1-3): " version_choice
+    
+    case $version_choice in
+        1)
+            NEXUS_VERSION="latest"
+            echo -e "${GREEN}✅ Menggunakan Latest Version (Optimized)${RESET}"
+            ;;
+        2)
+            echo -e "${YELLOW}Masukkan versi yang diinginkan (contoh: v0.8.11, v0.8.10, v0.9.0):${RESET}"
+            read -rp "Versi: " custom_version
+            if [[ -z "$custom_version" ]]; then
+                echo -e "${RED}❌ Versi tidak boleh kosong!${RESET}"
+                read -p "Tekan enter untuk kembali..."
+                return 1
+            fi
+            # Add 'v' prefix if not present
+            if [[ ! "$custom_version" =~ ^v ]]; then
+                custom_version="v$custom_version"
+            fi
+            NEXUS_VERSION="$custom_version"
+            echo -e "${GREEN}✅ Menggunakan versi: $NEXUS_VERSION${RESET}"
+            ;;
+        3)
+            show_available_versions
+            return 1
+            ;;
+        *)
+            echo -e "${RED}❌ Pilihan tidak valid!${RESET}"
+            read -p "Tekan enter untuk kembali..."
+            return 1
+            ;;
+    esac
+    return 0
+}
+
+# === Tampilkan Available Versions ===
+function show_available_versions() {
+    echo -e "${YELLOW}🔍 Mengambil daftar versi dari GitHub...${RESET}"
+    
+    # Check if curl is available
+    if ! command -v curl >/dev/null 2>&1; then
+        echo -e "${YELLOW}Installing curl...${RESET}"
+        apt update && apt install -y curl
+    fi
+    
+    echo -e "${CYAN}📋 Available Nexus CLI Versions:${RESET}"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    
+    # Get latest 10 releases from GitHub API
+    curl -s "https://api.github.com/repos/nexus-xyz/nexus-cli/releases?per_page=10" | \
+    grep '"tag_name":' | \
+    sed 's/.*"tag_name": "\(.*\)".*/\1/' | \
+    head -10 | \
+    nl -w2 -s'. '
+    
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo -e "${YELLOW}💡 Tip: Versi yang lebih lama mungkin lebih stabil${RESET}"
+    echo -e "${YELLOW}💡 Versi terbaru memiliki fitur dan perbaikan terbaru${RESET}"
+    read -p "Tekan enter untuk kembali ke menu versi..."
+}
+
 # === Build Docker Image ===
 function build_image() {
-    echo -e "${YELLOW}Menggunakan installer resmi untuk mendapatkan CLI versi terbaru...${RESET}"
-    local latest_version=$(get_cli_version)
-    if [ "$latest_version" != "Unknown" ]; then
-        echo -e "${GREEN}Versi terbaru tersedia: $latest_version${RESET}"
+    local version=${1:-"latest"}
+    
+    if [[ "$version" == "latest" ]]; then
+        echo -e "${YELLOW}Building optimized Nexus CLI with performance improvements (Latest)...${RESET}"
+        build_latest_version
+    else
+        echo -e "${YELLOW}Building Nexus CLI versi $version dari GitHub...${RESET}"
+        build_github_version "$version"
+    fi
+}
+
+# === Build Latest Version (Original Method) ===
+function build_latest_version() {
+    # Copy current directory (with optimized code) to temp directory
+    WORKDIR=$(mktemp -d)
+    cp -r . "$WORKDIR/"
+    cd "$WORKDIR"
+
+    cat > Dockerfile <<EOF
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PROVER_ID_FILE=/root/.nexus/node-id
+
+RUN apt-get update && apt-get install -y \\
+    curl \\
+    screen \\
+    bash \\
+    git \\
+    build-essential \\
+    pkg-config \\
+    libssl-dev \\
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Rust
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+ENV PATH="/root/.cargo/bin:\$PATH"
+
+# Copy optimized source code
+COPY . /nexus-cli
+WORKDIR /nexus-cli/clients/cli
+
+# Build optimized binary with performance improvements
+RUN cargo build --release
+
+# Check what was built and install the correct binary
+RUN ls -la target/release/ && \\
+    if [ -f target/release/nexus-cli ]; then \\
+        cp target/release/nexus-cli /usr/local/bin/nexus-network; \\
+    elif [ -f target/release/nexus ]; then \\
+        cp target/release/nexus /usr/local/bin/nexus-network; \\
+    elif [ -f target/release/nexus-network ]; then \\
+        cp target/release/nexus-network /usr/local/bin/nexus-network; \\
+    else \\
+        echo "No suitable binary found, listing all files:"; \\
+        find target/release -type f -executable; \\
+        exit 1; \\
     fi
 
+RUN chmod +x /usr/local/bin/nexus-network
+
+# Verify the binary works and store version info
+RUN nexus-network --version || echo "Binary built successfully"
+ENV NEXUS_CLI_VERSION=latest-optimized
+
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]
+EOF
+
+    cat > entrypoint.sh <<EOF
+#!/bin/bash
+set -e
+PROVER_ID_FILE="/root/.nexus/node-id"
+if [ -z "\$NODE_ID" ]; then
+    echo "NODE_ID belum disetel"
+    exit 1
+fi
+
+# Create .nexus directory if it doesn't exist
+mkdir -p /root/.nexus
+
+# Write NODE_ID to file
+echo "\$NODE_ID" > "\$PROVER_ID_FILE"
+
+# Kill any existing screen sessions
+screen -S nexus -X quit >/dev/null 2>&1 || true
+
+# Start nexus in screen session
+screen -dmS nexus bash -c "nexus-network start --node-id \$NODE_ID &>> /root/nexus.log"
+
+# Wait a bit for startup
+sleep 3
+
+# Check if screen session is running
+if screen -list | grep -q "nexus"; then
+    echo "Node berjalan di latar belakang dengan NODE_ID: \$NODE_ID"
+    echo "Screen session aktif, monitoring log..."
+else
+    echo "Gagal menjalankan node"
+    echo "=== Error Log ==="
+    cat /root/nexus.log 2>/dev/null || echo "No log file found"
+    exit 1
+fi
+
+# Follow the log
+tail -f /root/nexus.log
+EOF
+
+    docker build -t "$IMAGE_NAME" .
+    cd -
+    rm -rf "$WORKDIR"
+}
+
+# === Build GitHub Version ===
+function build_github_version() {
+    local version=$1
+    echo -e "${YELLOW}📦 Downloading Nexus CLI $version dari GitHub...${RESET}"
+    
     WORKDIR=$(mktemp -d)
     cd "$WORKDIR"
 
@@ -103,12 +333,45 @@ RUN apt-get update && apt-get install -y \\
     curl \\
     screen \\
     bash \\
+    git \\
+    build-essential \\
+    pkg-config \\
+    libssl-dev \\
     && rm -rf /var/lib/apt/lists/*
 
-# Install latest Nexus CLI using official installer
-RUN echo "Installing latest Nexus CLI from official installer..." && \\
-    curl -sSL https://cli.nexus.xyz/ | NONINTERACTIVE=1 sh && \\
-    ln -sf /root/.nexus/bin/nexus-network /usr/local/bin/nexus-network
+# Install Rust
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+ENV PATH="/root/.cargo/bin:\$PATH"
+
+# Clone Nexus CLI repository and checkout specific version
+RUN git clone https://github.com/nexus-xyz/nexus-cli.git
+WORKDIR /nexus-cli/clients/cli
+
+# Checkout specific version
+RUN git checkout tags/$version
+
+# Build the binary
+RUN cargo build --release
+
+# Install the binary
+RUN ls -la target/release/ && \\
+    if [ -f target/release/nexus-cli ]; then \\
+        cp target/release/nexus-cli /usr/local/bin/nexus-network; \\
+    elif [ -f target/release/nexus ]; then \\
+        cp target/release/nexus /usr/local/bin/nexus-network; \\
+    elif [ -f target/release/nexus-network ]; then \\
+        cp target/release/nexus-network /usr/local/bin/nexus-network; \\
+    else \\
+        echo "No suitable binary found, listing all files:"; \\
+        find target/release -type f -executable; \\
+        exit 1; \\
+    fi
+
+RUN chmod +x /usr/local/bin/nexus-network
+
+# Verify the binary works and store version info
+RUN nexus-network --version || echo "Binary built successfully for version $version"
+ENV NEXUS_CLI_VERSION=$version
 
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
@@ -120,37 +383,47 @@ EOF
 #!/bin/bash
 set -e
 PROVER_ID_FILE="/root/.nexus/node-id"
-
-# Tampilkan versi CLI yang terinstall
-echo "=== Nexus CLI Information ==="
-if command -v nexus-network >/dev/null 2>&1; then
-    nexus-network --version 2>/dev/null || echo "CLI Version: Installed (version check not available)"
-else
-    echo "CLI Version: Not found"
-fi
-echo "============================="
-
 if [ -z "\$NODE_ID" ]; then
     echo "NODE_ID belum disetel"
     exit 1
 fi
+
+# Create .nexus directory if it doesn't exist
+mkdir -p /root/.nexus
+
+# Write NODE_ID to file
 echo "\$NODE_ID" > "\$PROVER_ID_FILE"
+
+# Kill any existing screen sessions
 screen -S nexus -X quit >/dev/null 2>&1 || true
+
+# Start nexus in screen session
 screen -dmS nexus bash -c "nexus-network start --node-id \$NODE_ID &>> /root/nexus.log"
+
+# Wait a bit for startup
 sleep 3
+
+# Check if screen session is running
 if screen -list | grep -q "nexus"; then
-    echo "Node berjalan di latar belakang"
+    echo "Node berjalan di latar belakang dengan NODE_ID: \$NODE_ID (Version: $version)"
+    echo "Screen session aktif, monitoring log..."
 else
     echo "Gagal menjalankan node"
-    cat /root/nexus.log
+    echo "=== Error Log ==="
+    cat /root/nexus.log 2>/dev/null || echo "No log file found"
     exit 1
 fi
+
+# Follow the log
 tail -f /root/nexus.log
 EOF
 
+    echo -e "${YELLOW}🔨 Building Docker image untuk versi $version...${RESET}"
     docker build -t "$IMAGE_NAME" .
     cd -
     rm -rf "$WORKDIR"
+    
+    echo -e "${GREEN}✅ Berhasil build Nexus CLI versi $version${RESET}"
 }
 
 # === Jalankan Container ===
@@ -164,7 +437,15 @@ function run_container() {
     touch "$log_file"
     chmod 644 "$log_file"
 
-    docker run -d --name "$container_name" -v "$log_file":/root/nexus.log -e NODE_ID="$node_id" "$IMAGE_NAME"
+    # Add version environment variable to container
+    local version_env=""
+    if [[ -n "$NEXUS_VERSION" && "$NEXUS_VERSION" != "latest" ]]; then
+        version_env="-e NEXUS_CLI_VERSION=$NEXUS_VERSION"
+    else
+        version_env="-e NEXUS_CLI_VERSION=latest-optimized"
+    fi
+    
+    docker run -d --name "$container_name" -v "$log_file":/root/nexus.log -e NODE_ID="$node_id" $version_env "$IMAGE_NAME"
 
     check_cron
     echo "0 0 * * * rm -f $log_file" > "/etc/cron.d/nexus-log-cleanup-${node_id}"
@@ -182,6 +463,98 @@ function uninstall_node() {
 # === Ambil Semua Node ===
 function get_all_nodes() {
     docker ps -a --format "{{.Names}}" | grep "^${BASE_CONTAINER_NAME}-" | sed "s/${BASE_CONTAINER_NAME}-//"
+}
+
+# === Tampilkan Semua Node ===
+function list_nodes() {
+    show_header
+    echo -e "${CYAN}📊 Daftar Node Terdaftar:${RESET}"
+    echo "--------------------------------------------------------------"
+    printf "%-5s %-20s %-12s %-15s %-15s\n" "No" "Node ID" "Status" "CPU" "Memori"
+    echo "--------------------------------------------------------------"
+    local all_nodes=($(get_all_nodes))
+    local failed_nodes=()
+    for i in "${!all_nodes[@]}"; do
+        local node_id=${all_nodes[$i]}
+        local container="${BASE_CONTAINER_NAME}-${node_id}"
+        local cpu="N/A"
+        local mem="N/A"
+        local status="Tidak Aktif"
+        if docker inspect "$container" &>/dev/null; then
+            status=$(docker inspect -f '{{.State.Status}}' "$container" 2>/dev/null)
+            if [[ "$status" == "running" ]]; then
+                stats=$(docker stats --no-stream --format "{{.CPUPerc}}|{{.MemUsage}}" "$container" 2>/dev/null)
+                cpu=$(echo "$stats" | cut -d'|' -f1)
+                mem=$(echo "$stats" | cut -d'|' -f2 | cut -d'/' -f1 | xargs)
+            elif [[ "$status" == "exited" ]]; then
+                failed_nodes+=("$node_id")
+            fi
+        fi
+        printf "%-5s %-20s %-12s %-15s %-15s\n" "$((i+1))" "$node_id" "$status" "$cpu" "$mem"
+    done
+    echo "--------------------------------------------------------------"
+    if [ ${#failed_nodes[@]} -gt 0 ]; then
+        echo -e "${RED}⚠ Node gagal dijalankan (exited):${RESET}"
+        for id in "${failed_nodes[@]}"; do
+            echo "- $id"
+        done
+    fi
+    read -p "Tekan enter untuk kembali ke menu..."
+}
+
+# === Lihat Log Node ===
+function view_logs() {
+    local all_nodes=($(get_all_nodes))
+    if [ ${#all_nodes[@]} -eq 0 ]; then
+        echo "Tidak ada node"
+        read -p "Tekan enter..."
+        return
+    fi
+    echo "Pilih node untuk lihat log:"
+    for i in "${!all_nodes[@]}"; do
+        echo "$((i+1)). ${all_nodes[$i]}"
+    done
+    read -rp "Nomor: " choice
+    if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice > 0 && choice <= ${#all_nodes[@]} )); then
+        local selected=${all_nodes[$((choice-1))]}
+        echo -e "${YELLOW}Menampilkan log node: $selected${RESET}"
+        docker logs -f "${BASE_CONTAINER_NAME}-${selected}"
+    fi
+    read -p "Tekan enter..."
+}
+
+# === Hapus Beberapa Node ===
+function batch_uninstall_nodes() {
+    local all_nodes=($(get_all_nodes))
+    echo "Masukkan nomor node yang ingin dihapus (pisahkan spasi):"
+    for i in "${!all_nodes[@]}"; do
+        echo "$((i+1)). ${all_nodes[$i]}"
+    done
+    read -rp "Nomor: " input
+    for num in $input; do
+        if [[ "$num" =~ ^[0-9]+$ ]] && (( num > 0 && num <= ${#all_nodes[@]} )); then
+            uninstall_node "${all_nodes[$((num-1))]}"
+        else
+            echo "Lewati: $num"
+        fi
+    done
+    read -p "Tekan enter..."
+}
+
+# === Hapus Semua Node ===
+function uninstall_all_nodes() {
+    local all_nodes=($(get_all_nodes))
+    echo "Yakin ingin hapus SEMUA node? (y/n)"
+    read -rp "Konfirmasi: " confirm
+    if [[ "$confirm" =~ ^[Yy]$ ]]; then
+        for node in "${all_nodes[@]}"; do
+            uninstall_node "$node"
+        done
+        echo "Semua node dihapus."
+    else
+        echo "Dibatalkan."
+    fi
+    read -p "Tekan enter..."
 }
 
 # === Fungsi restart semua node ===
@@ -323,98 +696,6 @@ function setup_auto_refresh() {
     
     # Rekursif kembali ke menu auto-refresh
     setup_auto_refresh
-}
-
-# === Tampilkan Semua Node ===
-function list_nodes() {
-    show_header
-    echo -e "${CYAN}📊 Daftar Node Terdaftar:${RESET}"
-    echo "--------------------------------------------------------------"
-    printf "%-5s %-20s %-12s %-15s %-15s\n" "No" "Node ID" "Status" "CPU" "Memori"
-    echo "--------------------------------------------------------------"
-    local all_nodes=($(get_all_nodes))
-    local failed_nodes=()
-    for i in "${!all_nodes[@]}"; do
-        local node_id=${all_nodes[$i]}
-        local container="${BASE_CONTAINER_NAME}-${node_id}"
-        local cpu="N/A"
-        local mem="N/A"
-        local status="Tidak Aktif"
-        if docker inspect "$container" &>/dev/null; then
-            status=$(docker inspect -f '{{.State.Status}}' "$container" 2>/dev/null)
-            if [[ "$status" == "running" ]]; then
-                stats=$(docker stats --no-stream --format "{{.CPUPerc}}|{{.MemUsage}}" "$container" 2>/dev/null)
-                cpu=$(echo "$stats" | cut -d'|' -f1)
-                mem=$(echo "$stats" | cut -d'|' -f2 | cut -d'/' -f1 | xargs)
-            elif [[ "$status" == "exited" ]]; then
-                failed_nodes+=("$node_id")
-            fi
-        fi
-        printf "%-5s %-20s %-12s %-15s %-15s\n" "$((i+1))" "$node_id" "$status" "$cpu" "$mem"
-    done
-    echo "--------------------------------------------------------------"
-    if [ ${#failed_nodes[@]} -gt 0 ]; then
-        echo -e "${RED}⚠ Node gagal dijalankan (exited):${RESET}"
-        for id in "${failed_nodes[@]}"; do
-            echo "- $id"
-        done
-    fi
-    read -p "Tekan enter untuk kembali ke menu..."
-}
-
-# === Lihat Log Node ===
-function view_logs() {
-    local all_nodes=($(get_all_nodes))
-    if [ ${#all_nodes[@]} -eq 0 ]; then
-        echo "Tidak ada node"
-        read -p "Tekan enter..."
-        return
-    fi
-    echo "Pilih node untuk lihat log:"
-    for i in "${!all_nodes[@]}"; do
-        echo "$((i+1)). ${all_nodes[$i]}"
-    done
-    read -rp "Nomor: " choice
-    if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice > 0 && choice <= ${#all_nodes[@]} )); then
-        local selected=${all_nodes[$((choice-1))]}
-        echo -e "${YELLOW}Menampilkan log node: $selected${RESET}"
-        docker logs -f "${BASE_CONTAINER_NAME}-${selected}"
-    fi
-    read -p "Tekan enter..."
-}
-
-# === Hapus Beberapa Node ===
-function batch_uninstall_nodes() {
-    local all_nodes=($(get_all_nodes))
-    echo "Masukkan nomor node yang ingin dihapus (pisahkan spasi):"
-    for i in "${!all_nodes[@]}"; do
-        echo "$((i+1)). ${all_nodes[$i]}"
-    done
-    read -rp "Nomor: " input
-    for num in $input; do
-        if [[ "$num" =~ ^[0-9]+$ ]] && (( num > 0 && num <= ${#all_nodes[@]} )); then
-            uninstall_node "${all_nodes[$((num-1))]}"
-        else
-            echo "Lewati: $num"
-        fi
-    done
-    read -p "Tekan enter..."
-}
-
-# === Hapus Semua Node ===
-function uninstall_all_nodes() {
-    local all_nodes=($(get_all_nodes))
-    echo "Yakin ingin hapus SEMUA node? (y/n)"
-    read -rp "Konfirmasi: " confirm
-    if [[ "$confirm" =~ ^[Yy]$ ]]; then
-        for node in "${all_nodes[@]}"; do
-            uninstall_node "$node"
-        done
-        echo "Semua node dihapus."
-    else
-        echo "Dibatalkan."
-    fi
-    read -p "Tekan enter..."
 }
 
 # === Cleanup System Penuh ===
@@ -568,7 +849,7 @@ esac
 # === MENU UTAMA ===
 while true; do
     show_header
-    echo -e "${GREEN} 1.${RESET} ➕ Instal & Jalankan Node"
+    echo -e "${GREEN} 1.${RESET} ➕ Instal & Jalankan Node (Optimized)"
     echo -e "${GREEN} 2.${RESET} 📊 Lihat Status Semua Node"
     echo -e "${GREEN} 3.${RESET} ❌ Hapus Node Tertentu"
     echo -e "${GREEN} 4.${RESET} 🧾 Lihat Log Node"
@@ -581,10 +862,27 @@ while true; do
     case $pilihan in
         1)
             check_docker
+            
+            # Pilih versi terlebih dahulu
+            while true; do
+                if select_version; then
+                    break
+                fi
+            done
+            
             read -rp "Masukkan NODE_ID: " NODE_ID
             [ -z "$NODE_ID" ] && echo "NODE_ID tidak boleh kosong." && read -p "Tekan enter..." && continue
-            build_image
+            
+            build_image "$NEXUS_VERSION"
             run_container "$NODE_ID"
+            
+            # Update current version info after successful installation
+            if [[ "$NEXUS_VERSION" == "latest" ]]; then
+                CURRENT_NEXUS_VERSION="Latest (Optimized)"
+            else
+                CURRENT_NEXUS_VERSION="$NEXUS_VERSION"
+            fi
+            
             read -p "Tekan enter..."
             ;;
         2) list_nodes ;;
