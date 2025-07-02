@@ -8,6 +8,13 @@ WORKSPACE_DIR="/root"
 SCRIPT_DIR="/root/nexus-scripts"
 NODE_LIST_FILE="/root/nexus_nodes.txt"  # File untuk menyimpan daftar node
 SESSION_MANAGER_FILE="/root/nexus_session_manager.txt"  # File untuk menyimpan pilihan session manager
+REFRESH_INTERVAL_MINUTES=10  # Interval restart otomatis
+AUTO_REFRESH_ENABLED=false   # Status auto-refresh
+
+# === Global Variables ===
+CURRENT_NEXUS_VERSION=""
+LATEST_CLI_VERSION=""
+NEXUS_VERSION=""
 
 # === Warna terminal ===
 GREEN='\033[0;32m'
@@ -18,27 +25,73 @@ BLUE='\033[0;34m'
 MAGENTA='\033[0;35m'
 RESET='\033[0m'
 
-# === Ambil Versi CLI Terbaru ===
+# === Deteksi Versi CLI Terbaru ===
 function get_latest_cli_version() {
-    local latest_version=""
-    if command -v curl >/dev/null 2>&1; then
-        latest_version=$(curl -s https://api.github.com/repos/nexus-xyz/nexus-cli/releases/latest 2>/dev/null | grep '"tag_name"' | cut -d'"' -f4 2>/dev/null)
+    if [[ -z "$LATEST_CLI_VERSION" ]]; then
+        if command -v curl >/dev/null 2>&1; then
+            LATEST_CLI_VERSION=$(curl -s "https://api.github.com/repos/nexus-xyz/nexus-cli/releases/latest" | grep '"tag_name":' | sed 's/.*"tag_name": "\(.*\)".*/\1/' 2>/dev/null || echo "Unknown")
+        else
+            LATEST_CLI_VERSION="Unknown"
+        fi
     fi
-    
-    if [ -z "$latest_version" ]; then
-        echo "Unknown"
-    else
-        echo "$latest_version"
+    echo "$LATEST_CLI_VERSION"
+}
+
+# === Deteksi Versi yang Sedang Digunakan ===
+function get_current_system_version() {
+    if [[ -z "$CURRENT_NEXUS_VERSION" ]]; then
+        # Check if we have any stored version info
+        if [[ -n "$NEXUS_VERSION" && "$NEXUS_VERSION" != "latest" ]]; then
+            CURRENT_NEXUS_VERSION="$NEXUS_VERSION"
+        else
+            # Check if there are any running nodes
+            if [ -f "$NODE_LIST_FILE" ] && [ -s "$NODE_LIST_FILE" ]; then
+                local first_node=$(head -n 1 "$NODE_LIST_FILE")
+                if [ -n "$first_node" ]; then
+                    # Check if we have version info stored
+                    local version_file="$SCRIPT_DIR/nexus-version.txt"
+                    if [ -f "$version_file" ]; then
+                        CURRENT_NEXUS_VERSION=$(cat "$version_file")
+                    else
+                        CURRENT_NEXUS_VERSION="Latest (Official)"
+                    fi
+                else
+                    CURRENT_NEXUS_VERSION="Not Installed"
+                fi
+            else
+                CURRENT_NEXUS_VERSION="Not Installed"
+            fi
+        fi
     fi
+    echo "$CURRENT_NEXUS_VERSION"
 }
 
 # === Header Tampilan ===
 function show_header() {
     clear
-    local cli_version=$(get_latest_cli_version)
+    local latest_version=$(get_latest_cli_version)
+    local current_version=$(get_current_system_version)
+    local auto_refresh_status="${RED}OFF${RESET}"
+    
+    # Cek apakah auto-refresh aktif berdasarkan variabel status
+    if [ "$AUTO_REFRESH_ENABLED" = true ]; then
+        auto_refresh_status="${GREEN}ON${RESET} (Setiap ${REFRESH_INTERVAL_MINUTES} menit)"
+    else
+        # Double-check dengan crontab juga
+        if crontab -l 2>/dev/null | grep -q "restart_nexus_nodes"; then
+            auto_refresh_status="${GREEN}ON${RESET} (Setiap ${REFRESH_INTERVAL_MINUTES} menit)"
+            # Update variabel status jika ternyata aktif
+            AUTO_REFRESH_ENABLED=true
+            # Simpan status ke file
+            sed -i "s/^AUTO_REFRESH_ENABLED=.*/AUTO_REFRESH_ENABLED=true   # Status auto-refresh/" "$0"
+        fi
+    fi
+    
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo -e "                     NEXUS - Direct Node Setup (VPS Edition)"
-    echo -e "                      CLI Versi Terbaru: ${YELLOW}${cli_version}${CYAN}"
+    echo -e "                     📦 Latest CLI Version: ${latest_version}"
+    echo -e "                     🔧 System Version: ${current_version}"
+    echo -e "                     🔄 Auto-refresh: ${auto_refresh_status}"
     echo -e "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
 }
 
@@ -81,6 +134,77 @@ function detect_environment() {
     
     echo -e "${CYAN}[*] Deteksi lingkungan selesai${RESET}"
     echo ""
+}
+
+# === Pilih Versi Nexus ===
+function select_version() {
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo -e "                           PILIH VERSI NEXUS CLI"
+    echo -e "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+    echo -e "${GREEN} 1.${RESET} 🚀 Latest Version (Official Installer - Recommended)"
+    echo -e "${GREEN} 2.${RESET} 📦 Specific Version dari GitHub"
+    echo -e "${GREEN} 3.${RESET} 📋 Lihat Available Versions"
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+    
+    read -rp "Pilih opsi (1-3): " version_choice
+    
+    case $version_choice in
+        1)
+            NEXUS_VERSION="latest"
+            echo -e "${GREEN}✅ Menggunakan Latest Version (Official Installer)${RESET}"
+            ;;
+        2)
+            echo -e "${YELLOW}Masukkan versi yang diinginkan (contoh: v0.8.11, v0.8.10, v0.9.0):${RESET}"
+            read -rp "Versi: " custom_version
+            if [[ -z "$custom_version" ]]; then
+                echo -e "${RED}❌ Versi tidak boleh kosong!${RESET}"
+                read -p "Tekan enter untuk kembali..."
+                return 1
+            fi
+            # Add 'v' prefix if not present
+            if [[ ! "$custom_version" =~ ^v ]]; then
+                custom_version="v$custom_version"
+            fi
+            NEXUS_VERSION="$custom_version"
+            echo -e "${GREEN}✅ Menggunakan versi: $NEXUS_VERSION${RESET}"
+            ;;
+        3)
+            show_available_versions
+            return 1
+            ;;
+        *)
+            echo -e "${RED}❌ Pilihan tidak valid!${RESET}"
+            read -p "Tekan enter untuk kembali..."
+            return 1
+            ;;
+    esac
+    return 0
+}
+
+# === Tampilkan Available Versions ===
+function show_available_versions() {
+    echo -e "${YELLOW}🔍 Mengambil daftar versi dari GitHub...${RESET}"
+    
+    # Check if curl is available
+    if ! command -v curl >/dev/null 2>&1; then
+        echo -e "${YELLOW}Installing curl...${RESET}"
+        apt update && apt install -y curl
+    fi
+    
+    echo -e "${CYAN}📋 Available Nexus CLI Versions:${RESET}"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    
+    # Get latest 10 releases from GitHub API
+    curl -s "https://api.github.com/repos/nexus-xyz/nexus-cli/releases?per_page=10" | \
+    grep '"tag_name":' | \
+    sed 's/.*"tag_name": "\(.*\)".*/\1/' | \
+    head -10 | \
+    nl -w2 -s'. '
+    
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo -e "${YELLOW}💡 Tip: Versi yang lebih lama mungkin lebih stabil${RESET}"
+    echo -e "${YELLOW}💡 Versi terbaru memiliki fitur dan perbaikan terbaru${RESET}"
+    read -p "Tekan enter untuk kembali ke menu versi..."
 }
 
 # === Pilih Session Manager ===
@@ -183,53 +307,145 @@ function clean_old_cli() {
 
 # === Install Nexus CLI ===
 function install_nexus_cli() {
+    local version=${1:-"latest"}
+    
     echo -e "${CYAN}[*] Menginstal Nexus CLI...${RESET}"
     
     if [ "$GLIBC_COMPATIBLE" = true ]; then
         # Hapus CLI lama terlebih dahulu untuk memaksa update
         clean_old_cli
         
-        # Install Nexus CLI dengan timestamp untuk memaksa download fresh
-        curl -sSL "https://cli.nexus.xyz/?t=$(date +%s)" | sh
-        
-        # Deteksi lokasi nexus-network binary
-        NEXUS_BINARY=""
-        
-        # Cek di lokasi default
-        if [ -f "$NODE_DATA_DIR/bin/nexus-network" ]; then
-            NEXUS_BINARY="$NODE_DATA_DIR/bin/nexus-network"
-        # Cek di PATH
-        elif command -v nexus-network &> /dev/null; then
-            NEXUS_BINARY=$(which nexus-network)
-        # Cek di lokasi alternatif
-        elif [ -f "/usr/local/bin/nexus-network" ]; then
-            NEXUS_BINARY="/usr/local/bin/nexus-network"
-        fi
-        
-        if [ -n "$NEXUS_BINARY" ]; then
-            echo -e "${GREEN}[✓] Nexus binary ditemukan di: $NEXUS_BINARY${RESET}"
-            
-            # Simpan lokasi binary untuk digunakan nanti
-            echo "$NEXUS_BINARY" > "$SCRIPT_DIR/nexus-binary-path.txt"
-            
-            # Buat symlink jika belum ada
-            if [ ! -f "/usr/local/bin/nexus-network" ]; then
-                ln -sf "$NEXUS_BINARY" /usr/local/bin/nexus-network
-                echo -e "${GREEN}[✓] Symlink dibuat di /usr/local/bin/nexus-network${RESET}"
-            fi
+        if [[ "$version" == "latest" ]]; then
+            echo -e "${YELLOW}📦 Installing Latest Version (Official Installer)...${RESET}"
+            install_latest_cli
         else
-            echo -e "${RED}[!] Nexus binary tidak ditemukan${RESET}"
-            echo -e "${YELLOW}[!] Coba jalankan 'source /root/.profile' dan coba lagi${RESET}"
-            return 1
+            echo -e "${YELLOW}📦 Installing Version $version dari GitHub...${RESET}"
+            install_github_cli "$version"
         fi
         
-        echo -e "${GREEN}[✓] Nexus CLI berhasil diinstal${RESET}"
     else
         echo -e "${RED}[!] Tidak dapat menginstal Nexus CLI karena GLIBC tidak kompatibel${RESET}"
         echo -e "${YELLOW}[!] Anda perlu menggunakan Ubuntu 24.04 untuk menjalankan Nexus Network${RESET}"
     fi
     
     echo ""
+}
+
+# === Install Latest CLI ===
+function install_latest_cli() {
+    # Install Nexus CLI dengan timestamp untuk memaksa download fresh
+    curl -sSL "https://cli.nexus.xyz/?t=$(date +%s)" | sh
+    
+    # Deteksi lokasi nexus-network binary
+    detect_and_setup_binary "latest-official"
+}
+
+# === Install GitHub CLI ===
+function install_github_cli() {
+    local version=$1
+    echo -e "${YELLOW}📦 Building Nexus CLI $version dari GitHub...${RESET}"
+    
+    # Install Rust if not available
+    if ! command -v cargo >/dev/null 2>&1; then
+        echo -e "${CYAN}[*] Installing Rust...${RESET}"
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+        source ~/.cargo/env
+    fi
+    
+    # Install git if not available
+    if ! command -v git >/dev/null 2>&1; then
+        echo -e "${CYAN}[*] Installing git...${RESET}"
+        apt update && apt install -y git
+    fi
+    
+    # Create temporary directory
+    TEMP_DIR=$(mktemp -d)
+    cd "$TEMP_DIR"
+    
+    # Clone repository and checkout specific version
+    echo -e "${CYAN}[*] Cloning Nexus CLI repository...${RESET}"
+    git clone https://github.com/nexus-xyz/nexus-cli.git
+    cd nexus-cli/clients/cli
+    
+    echo -e "${CYAN}[*] Checking out version $version...${RESET}"
+    git checkout tags/$version
+    
+    # Build the binary
+    echo -e "${CYAN}[*] Building binary...${RESET}"
+    cargo build --release
+    
+    # Install the binary
+    echo -e "${CYAN}[*] Installing binary...${RESET}"
+    if [ -f target/release/nexus-cli ]; then
+        cp target/release/nexus-cli /usr/local/bin/nexus-network
+    elif [ -f target/release/nexus ]; then
+        cp target/release/nexus /usr/local/bin/nexus-network
+    elif [ -f target/release/nexus-network ]; then
+        cp target/release/nexus-network /usr/local/bin/nexus-network
+    else
+        echo -e "${RED}[!] No suitable binary found${RESET}"
+        ls -la target/release/
+        cd - && rm -rf "$TEMP_DIR"
+        return 1
+    fi
+    
+    chmod +x /usr/local/bin/nexus-network
+    
+    # Cleanup
+    cd - && rm -rf "$TEMP_DIR"
+    
+    # Setup binary path
+    detect_and_setup_binary "$version"
+    
+    echo -e "${GREEN}[✓] Nexus CLI $version berhasil diinstal${RESET}"
+}
+
+# === Detect and Setup Binary ===
+function detect_and_setup_binary() {
+    local version=${1:-"latest"}
+    
+    # Deteksi lokasi nexus-network binary
+    NEXUS_BINARY=""
+    
+    # Cek di lokasi default
+    if [ -f "$NODE_DATA_DIR/bin/nexus-network" ]; then
+        NEXUS_BINARY="$NODE_DATA_DIR/bin/nexus-network"
+    # Cek di PATH
+    elif command -v nexus-network &> /dev/null; then
+        NEXUS_BINARY=$(which nexus-network)
+    # Cek di lokasi alternatif
+    elif [ -f "/usr/local/bin/nexus-network" ]; then
+        NEXUS_BINARY="/usr/local/bin/nexus-network"
+    fi
+    
+    if [ -n "$NEXUS_BINARY" ]; then
+        echo -e "${GREEN}[✓] Nexus binary ditemukan di: $NEXUS_BINARY${RESET}"
+        
+        # Simpan lokasi binary untuk digunakan nanti
+        echo "$NEXUS_BINARY" > "$SCRIPT_DIR/nexus-binary-path.txt"
+        
+        # Simpan versi yang digunakan
+        echo "$version" > "$SCRIPT_DIR/nexus-version.txt"
+        
+        # Buat symlink jika belum ada
+        if [ ! -f "/usr/local/bin/nexus-network" ]; then
+            ln -sf "$NEXUS_BINARY" /usr/local/bin/nexus-network
+            echo -e "${GREEN}[✓] Symlink dibuat di /usr/local/bin/nexus-network${RESET}"
+        fi
+        
+        # Update current version info
+        if [[ "$version" == "latest-official" ]]; then
+            CURRENT_NEXUS_VERSION="Latest (Official)"
+        else
+            CURRENT_NEXUS_VERSION="$version"
+        fi
+        
+        echo -e "${GREEN}[✓] Nexus CLI berhasil diinstal${RESET}"
+    else
+        echo -e "${RED}[!] Nexus binary tidak ditemukan${RESET}"
+        echo -e "${YELLOW}[!] Coba jalankan 'source /root/.profile' dan coba lagi${RESET}"
+        return 1
+    fi
 }
 
 # === Buat Script Runner ===
@@ -788,6 +1004,150 @@ function full_reset() {
     read -p "Tekan enter..."
 }
 
+# === Fungsi restart semua node ===
+function restart_all_nodes() {
+    if [ ! -f "$NODE_LIST_FILE" ] || [ ! -s "$NODE_LIST_FILE" ]; then
+        echo -e "${YELLOW}⚠️  Tidak ada node yang terdaftar untuk di-restart${RESET}"
+        return
+    fi
+    
+    echo -e "${CYAN}♻  Memulai restart otomatis semua node...${RESET}"
+    
+    while read -r node_id; do
+        echo -e "${YELLOW}🔄 Restarting node ${node_id}...${RESET}"
+        
+        # Stop node
+        "$SCRIPT_DIR/stop-nexus.sh" "$node_id" >/dev/null 2>&1
+        
+        # Wait a moment
+        sleep 2
+        
+        # Start node again
+        "$SCRIPT_DIR/run-nexus.sh" "$node_id" >/dev/null 2>&1
+        
+    done < "$NODE_LIST_FILE"
+    
+    echo -e "${GREEN}✅ Semua node telah di-restart${RESET}"
+    echo -e "${CYAN}⏱  Next restart: $(date -d "+${REFRESH_INTERVAL_MINUTES} minutes" "+%H:%M:%S")${RESET}"
+}
+
+# === Setup cron untuk auto-refresh ===
+function setup_auto_refresh() {
+    check_cron
+    mkdir -p "$LOG_DIR"
+    
+    # Cek apakah auto-refresh sudah aktif
+    local is_active=false
+    if crontab -l 2>/dev/null | grep -q "restart_nexus_nodes"; then
+        is_active=true
+    fi
+    
+    show_header
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+    echo -e "                           🔄 PENGATURAN AUTO-REFRESH NODE"
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+    
+    if [ "$is_active" = true ]; then
+        echo -e "${GREEN}Status: Auto-refresh AKTIF${RESET}"
+        echo -e "${CYAN}Interval: Setiap ${REFRESH_INTERVAL_MINUTES} menit${RESET}"
+        echo -e "${CYAN}Next restart: $(date -d "+${REFRESH_INTERVAL_MINUTES} minutes" "+%H:%M:%S")${RESET}"
+        echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+        
+        echo -e "${GREEN}1.${RESET} Ubah interval refresh (saat ini: ${REFRESH_INTERVAL_MINUTES} menit)"
+        echo -e "${GREEN}2.${RESET} Matikan auto-refresh"
+        echo -e "${GREEN}3.${RESET} Restart semua node sekarang"
+        echo -e "${GREEN}4.${RESET} Kembali ke menu utama"
+        
+        read -rp "Pilih opsi (1-4): " choice
+        
+        case $choice in
+            1)
+                read -rp "Masukkan interval refresh baru (dalam menit): " new_interval
+                if [[ "$new_interval" =~ ^[0-9]+$ ]] && [ "$new_interval" -gt 0 ]; then
+                    REFRESH_INTERVAL_MINUTES=$new_interval
+                    # Update konfigurasi
+                    sed -i "s/^REFRESH_INTERVAL_MINUTES=.*/REFRESH_INTERVAL_MINUTES=$new_interval  # Interval restart otomatis/" "$0"
+                    # Aktifkan ulang dengan interval baru
+                    crontab -l | grep -v "restart_nexus_nodes" | crontab -
+                    (crontab -l 2>/dev/null; echo "*/${REFRESH_INTERVAL_MINUTES} * * * * $PWD/$0 --restart-nodes >> $LOG_DIR/refresh.log 2>&1") | crontab -
+                    AUTO_REFRESH_ENABLED=true
+                    sed -i "s/^AUTO_REFRESH_ENABLED=.*/AUTO_REFRESH_ENABLED=true   # Status auto-refresh/" "$0"
+                    echo -e "${GREEN}✅ Interval refresh diubah menjadi ${new_interval} menit${RESET}"
+                else
+                    echo -e "${RED}Interval tidak valid. Harus berupa angka positif.${RESET}"
+                fi
+                ;;
+            2)
+                crontab -l | grep -v "restart_nexus_nodes" | crontab -
+                AUTO_REFRESH_ENABLED=false
+                sed -i "s/^AUTO_REFRESH_ENABLED=.*/AUTO_REFRESH_ENABLED=false   # Status auto-refresh/" "$0"
+                echo -e "${YELLOW}🔄 Auto-refresh dinonaktifkan${RESET}"
+                ;;
+            3)
+                restart_all_nodes
+                ;;
+            4)
+                return
+                ;;
+            *)
+                echo -e "${RED}Pilihan tidak valid.${RESET}"
+                ;;
+        esac
+    else
+        echo -e "${RED}Status: Auto-refresh TIDAK AKTIF${RESET}"
+        echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+        
+        echo -e "${GREEN}1.${RESET} Aktifkan auto-refresh (interval: ${REFRESH_INTERVAL_MINUTES} menit)"
+        echo -e "${GREEN}2.${RESET} Ubah interval refresh (saat ini: ${REFRESH_INTERVAL_MINUTES} menit)"
+        echo -e "${GREEN}3.${RESET} Kembali ke menu utama"
+        
+        read -rp "Pilih opsi (1-3): " choice
+        
+        case $choice in
+            1)
+                crontab -l | grep -v "restart_nexus_nodes" | crontab -
+                (crontab -l 2>/dev/null; echo "*/${REFRESH_INTERVAL_MINUTES} * * * * $PWD/$0 --restart-nodes >> $LOG_DIR/refresh.log 2>&1") | crontab -
+                AUTO_REFRESH_ENABLED=true
+                sed -i "s/^AUTO_REFRESH_ENABLED=.*/AUTO_REFRESH_ENABLED=true   # Status auto-refresh/" "$0"
+                echo -e "${GREEN}✅ Auto-refresh diaktifkan setiap ${REFRESH_INTERVAL_MINUTES} menit${RESET}"
+                echo -e "${CYAN}⏱  Next restart: $(date -d "+${REFRESH_INTERVAL_MINUTES} minutes" "+%H:%M:%S")${RESET}"
+                restart_all_nodes
+                ;;
+            2)
+                read -rp "Masukkan interval refresh baru (dalam menit): " new_interval
+                if [[ "$new_interval" =~ ^[0-9]+$ ]] && [ "$new_interval" -gt 0 ]; then
+                    REFRESH_INTERVAL_MINUTES=$new_interval
+                    sed -i "s/^REFRESH_INTERVAL_MINUTES=.*/REFRESH_INTERVAL_MINUTES=$new_interval  # Interval restart otomatis/" "$0"
+                    echo -e "${GREEN}✅ Interval refresh diubah menjadi ${new_interval} menit${RESET}"
+                else
+                    echo -e "${RED}Interval tidak valid. Harus berupa angka positif.${RESET}"
+                fi
+                ;;
+            3)
+                return
+                ;;
+            *)
+                echo -e "${RED}Pilihan tidak valid.${RESET}"
+                ;;
+        esac
+    fi
+    
+    read -p "Tekan enter untuk kembali..."
+    setup_auto_refresh
+}
+
+# === Periksa Cron ===
+function check_cron() {
+    if ! command -v cron >/dev/null 2>&1; then
+        echo -e "${YELLOW}⚠ Cron belum tersedia. Menginstal cron...${RESET}"
+        apt update >/dev/null 2>&1
+        apt install -y cron >/dev/null 2>&1
+        systemctl enable cron >/dev/null 2>&1
+        systemctl start cron >/dev/null 2>&1
+        echo -e "${GREEN}✅ Cron berhasil diinstal${RESET}"
+    fi
+}
+
 # === Informasi Sistem ===
 function show_system_info() {
     show_header
@@ -808,6 +1168,8 @@ function show_system_info() {
         echo -e "${GREEN}Container:${RESET} Berjalan di host"
     fi
     
+    echo -e "${GREEN}Session Manager:${RESET} $SESSION_MANAGER"
+    
     # Cek status node
     echo -e "${GREEN}Status Node:${RESET}"
     if [ -f "$NODE_LIST_FILE" ] && [ -s "$NODE_LIST_FILE" ]; then
@@ -815,9 +1177,18 @@ function show_system_info() {
         local i=1
         while read -r node_id; do
             local status="Tidak Aktif"
-            if screen -list | grep -q "nexus-$node_id"; then
-                status="Aktif"
+            local session_name="nexus-$node_id"
+            
+            if [ "$SESSION_MANAGER" = "tmux" ]; then
+                if tmux has-session -t "$session_name" 2>/dev/null; then
+                    status="Aktif (tmux)"
+                fi
+            else
+                if screen -list | grep -q "$session_name"; then
+                    status="Aktif (screen)"
+                fi
             fi
+            
             echo "$i. Node ID: $node_id - Status: $status"
             i=$((i+1))
         done < "$NODE_LIST_FILE"
@@ -856,12 +1227,13 @@ function main_menu() {
         echo -e "${GREEN} 4.${RESET} ⏹️  Hentikan Node"
         echo -e "${GREEN} 5.${RESET} 💥 Hapus Node"
         echo -e "${GREEN} 6.${RESET} 🔄 Ganti Session Manager"
-        echo -e "${GREEN} 7.${RESET} 🔥 Reset Lengkap (Force Update CLI)"
-        echo -e "${GREEN} 8.${RESET} ℹ️  Informasi Sistem"
-        echo -e "${GREEN} 9.${RESET} 🚪 Keluar"
+        echo -e "${GREEN} 7.${RESET} 🔄 Auto-Refresh Node"
+        echo -e "${GREEN} 8.${RESET} 🔥 Reset Lengkap (Force Update CLI)"
+        echo -e "${GREEN} 9.${RESET} ℹ️  Informasi Sistem"
+        echo -e "${GREEN}10.${RESET} 🚪 Keluar"
         echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
         
-        read -rp "Pilih menu (1-9): " pilihan
+        read -rp "Pilih menu (1-10): " pilihan
         
         case $pilihan in
             1)
@@ -874,6 +1246,13 @@ function main_menu() {
                     fi
                 fi
                 
+                # Pilih versi terlebih dahulu
+                while true; do
+                    if select_version; then
+                        break
+                    fi
+                done
+                
                 # Pilih session manager jika belum dipilih
                 if [ -z "$SESSION_MANAGER" ]; then
                     choose_session_manager
@@ -885,8 +1264,8 @@ function main_menu() {
                 # Buat direktori
                 create_directories
                 
-                # Install Nexus CLI
-                install_nexus_cli
+                # Install Nexus CLI dengan versi yang dipilih
+                install_nexus_cli "$NEXUS_VERSION"
                 
                 # Buat script runner
                 create_runner_script
@@ -895,6 +1274,13 @@ function main_menu() {
                 read -rp "Masukkan NODE_ID: " NODE_ID
                 [ -z "$NODE_ID" ] && echo "NODE_ID tidak boleh kosong." && read -p "Tekan enter..." && continue
                 run_nexus_node "$NODE_ID"
+                
+                # Update current version info after successful installation
+                if [[ "$NEXUS_VERSION" == "latest" ]]; then
+                    CURRENT_NEXUS_VERSION="Latest (Official)"
+                else
+                    CURRENT_NEXUS_VERSION="$NEXUS_VERSION"
+                fi
                 
                 read -p "Tekan enter..."
                 ;;
@@ -914,12 +1300,15 @@ function main_menu() {
                 choose_session_manager 
                 ;;
             7) 
+                setup_auto_refresh 
+                ;;
+            8) 
                 full_reset 
                 ;;
-            8)
+            9)
                 show_system_info
                 ;;
-            9) 
+            10) 
                 echo "Keluar..."; 
                 exit 0 
                 ;;
@@ -932,6 +1321,17 @@ function main_menu() {
 }
 
 # === MAIN EXECUTION ===
+
+# Handle command line arguments for auto-refresh
+if [[ "$1" == "--restart-nodes" ]]; then
+    # Load session manager yang tersimpan
+    load_saved_session_manager
+    
+    # Restart all nodes
+    restart_all_nodes
+    exit 0
+fi
+
 show_header
 detect_environment
 
