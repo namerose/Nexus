@@ -211,11 +211,11 @@ function build_image() {
     fi
 }
 
-# === Build Latest Version (Original Method) ===
+# === Build Latest Version (Fixed Method) ===
 function build_latest_version() {
-    # Copy current directory (with optimized code) to temp directory
+    echo -e "${YELLOW}📦 Downloading latest Nexus CLI dari GitHub...${RESET}"
+    
     WORKDIR=$(mktemp -d)
-    cp -r . "$WORKDIR/"
     cd "$WORKDIR"
 
     cat > Dockerfile <<EOF
@@ -238,8 +238,8 @@ RUN apt-get update && apt-get install -y \\
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 ENV PATH="/root/.cargo/bin:\$PATH"
 
-# Copy optimized source code
-COPY . /nexus-cli
+# Clone latest Nexus CLI repository
+RUN git clone https://github.com/nexus-xyz/nexus-cli.git
 WORKDIR /nexus-cli/clients/cli
 
 # Build optimized binary with performance improvements
