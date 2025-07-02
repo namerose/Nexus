@@ -362,7 +362,19 @@ if [ -z "\$NODE_ID" ]; then
     exit 1
 fi
 
+# Buat direktori .nexus jika belum ada
+mkdir -p "/root/.nexus"
+
+# Tulis NODE_ID ke file
 echo "\$NODE_ID" > "\$PROVER_ID_FILE"
+
+# Verifikasi file berhasil dibuat
+if [ ! -f "\$PROVER_ID_FILE" ]; then
+    echo "Error: Gagal membuat file node-id"
+    exit 1
+fi
+
+echo "Node ID \$NODE_ID berhasil disimpan ke \$PROVER_ID_FILE"
 
 # Cek dan matikan screen yang mungkin masih berjalan
 screen -S nexus -X quit >/dev/null 2>&1 || true
@@ -477,7 +489,19 @@ if [ -z "\$NODE_ID" ]; then
     exit 1
 fi
 
+# Buat direktori .nexus jika belum ada
+mkdir -p "/root/.nexus"
+
+# Tulis NODE_ID ke file
 echo "\$NODE_ID" > "\$PROVER_ID_FILE"
+
+# Verifikasi file berhasil dibuat
+if [ ! -f "\$PROVER_ID_FILE" ]; then
+    echo "Error: Gagal membuat file node-id"
+    exit 1
+fi
+
+echo "Node ID \$NODE_ID berhasil disimpan ke \$PROVER_ID_FILE"
 
 # Cek dan matikan screen yang mungkin masih berjalan
 screen -S nexus -X quit >/dev/null 2>&1 || true
